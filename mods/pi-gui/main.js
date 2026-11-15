@@ -776,7 +776,14 @@ export default class PiGui extends View {
     // Telling that apart from "Pi is not running yet" is the difference between
     // an explanation and a panel that waits for ever.
     this.tabHasTerminal = panes().some((pane) => localId(pane.tab) === ctxTab && pane.terminal);
-    const found = await this.registrations(machine);
+    // Bounded here, not in the host: a machine's exec or a folder read can hang
+    // past its own timeout, and an await that never returns is a panel stuck on
+    // "Loading…" with no retry (the catch only covers what throws). Losing the
+    // race leaves the look running; its answer is simply ignored.
+    const found = await Promise.race([
+      this.registrations(machine),
+      sleep(cx, 8000).then(() => ({ list: [], error: "the registration folder did not answer in 8 s" })),
+    ]);
     const ranked = [];
     for (const info of found.list) {
       if (!info.port || !info.token) continue;

@@ -60,7 +60,8 @@ $targets = @(
   @{ name = "mods/mr-review";           live = Join-Path $appHome "mods/mr-review" },
   @{ name = "mods/pi-sessions";         live = Join-Path $appHome "mods/pi-sessions" },
   @{ name = "mods/pi-gui";              live = Join-Path $appHome "mods/pi-gui" },
-  @{ name = "mods/menu-pi";             live = Join-Path $appHome "mods/menu-pi" }
+  @{ name = "mods/menu-pi";             live = Join-Path $appHome "mods/menu-pi" },
+  @{ name = "mods/board";               live = Join-Path $appHome "mods/board" }
 )
 # The bridge is a Pi extension: it lives with the Pi that runs, so a test home does not get one.
 if (-not $isolated) {

@@ -15,7 +15,8 @@ here (or install once with `-Link` and edit live).
 |---|---|---|
 | `layouts/deck.json` | the layout itself (cloned from Herdr's `main`) | `~/.config/herdr-app/layouts/deck.json` |
 | `mods/pi-gui/` | Pi's panel: transcript, pickers, composer (native GPUI) | `~/.config/herdr-app/mods/pi-gui/` |
-| `mods/rail/` | the right-edge rail that opens the panel stack | `~/.config/herdr-app/mods/rail/` |
+| `mods/rail/` | the right-edge rail that opens the panel stack and the board | `~/.config/herdr-app/mods/rail/` |
+| `mods/board/` | every agent at a glance: Needs you, and an Overview of all tabs | `~/.config/herdr-app/mods/board/` |
 | `mods/gitlab-mr/` | merge requests of the space's project, via `glab` | `~/.config/herdr-app/mods/gitlab-mr/` |
 | `mods/mr-review/` | one MR reviewed in a tab of its own | `~/.config/herdr-app/mods/mr-review/` |
 | `mods/pi-sessions/` | Pi sessions of the folder the space works in | `~/.config/herdr-app/mods/pi-sessions/` |
@@ -38,16 +39,20 @@ header) and adds one column on the right:
 sidebar   268 px   brand (workspace-chrome) / spaces / agents / footer
 work               tabs
                    work-body, padding 8, gap 8
-                     main       the tab's active pane, header = pane mod
+                     screens    stack: main (the tab's panes) | board   — the board takes the middle
                      panel      stack: files | changes          hidden
                      sidepanel  stack: gitlab-mr | pi-sessions  hidden, the rail opens it
                      rail       the icon rail, 44 px
                    status (workspace-status)
 ```
 
-Three ids are a contract between the mods and the layout: `sidepanel` (the stack the
-rail opens and closes), and the child ids inside it (`gitlab-mr`, `pi-sessions`) which
-are what `layout.select` takes. A panel is handed its own coordinates in props —
+`screens` is what makes the board possible without a second window: it holds the tab's own
+panes and the board, and the rail switches between them. The tab keeps running while the board
+is up (a terminal in a hidden stack child is a hidden pane, not a closed one).
+
+The ids are a contract between the mods and the layout: `sidepanel` (the stack the rail
+opens and closes) and `screens` (the stack that swaps the tab for the board), the child ids
+inside them, which are what `layout.select` takes and what the rail's rows name. A panel is handed its own coordinates in props —
 `{"stack": "sidepanel", "node": "gitlab-mr"}` — so a stack can be renamed or a panel
 moved without touching its code.
 
@@ -156,6 +161,11 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
 - **mr-review** — changed files on the left, their diff on the right, merge and close
   along the top. Everything comes from the API: the repo does not have to be on
   this machine, and nothing is written into a local `.git`.
+- **board** — two views of what the whole window is doing, from Herdr's own `agents()` and
+  `spaces()`: **Needs you** lists every agent that is blocked (and opens its terminal), and
+  **Overview** draws every open tab as a card, grouped by status or by workspace, with how long
+  ago it changed. The rail's bell says how many are waiting: the board puts that count in shared
+  state, the way gitlab-mr puts its MR count there, so neither has to know the other.
 - **pi-sessions** — the folder's Pi sessions, newest first; a row opens that session
   in a tab of its own. A page is the most that is ever read: one `readdir` per row,
   and a session file only once its row is on screen.

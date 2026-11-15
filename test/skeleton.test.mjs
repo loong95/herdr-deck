@@ -61,23 +61,41 @@ test("the installer installs every mod", () => {
   assert.ok(installed.has("menu-pi"));
 });
 
+test("no mod folder shadows one of Herdr's own", () => {
+  // Herdr replaces its shipped mods at start, so a local "agents" is silently not ours: the
+  // block draws Herdr's own panel, and nothing says so. Ship a name of our own.
+  for (const name of modFolders) {
+    assert.ok(!SHIPPED.has(name), `mods/${name} has the name of a shipped mod — Herdr's own would be drawn instead`);
+  }
+});
+
 test("the rail's rows point at children that are in the layout, with icons that exist", () => {
   const rail = read("mods", "rail", "main.js");
   const entries = rail.slice(rail.indexOf("const ENTRIES"), rail.indexOf("const STACK"));
-  const rows = [...entries.matchAll(/\{\s*child:\s*"([^"]+)"([^}]*)\}/g)].map((m) => ({ child: m[1], rest: m[2] }));
-  assert.ok(rows.length >= 2, "the rail has rows");
-  // The stack the rail opens is named in STACK, and its children are the layout's stack children.
-  const stackId = /const STACK = "([^"]+)"/.exec(rail)[1];
-  const stack = byId(stackId);
-  assert.ok(stack && stack.type === "stack", `no stack "${stackId}" in deck.json`);
-  const children = (stack.children ?? []).map((c) => c.id);
+  // One row per {...} in ENTRIES; a row names a stack (a column beside the rail) or a screen.
+  const rows = [...entries.matchAll(/\{([^}]*)\}/g)].map((m) => m[1]).map((body) => ({
+    child: /child:\s*"([^"]+)"/.exec(body)?.[1],
+    icon: /icon:\s*"([^"]+)"/.exec(body)?.[1],
+    stack: /stack:\s*"([^"]+)"/.exec(body)?.[1],
+    screen: /screen:\s*"([^"]+)"/.exec(body)?.[1],
+  })).filter((row) => row.child);
+  assert.ok(rows.length >= 4, "the rail has rows");
+
   for (const row of rows) {
+    const stackId = row.screen ?? row.stack ?? /const STACK = "([^"]+)"/.exec(rail)[1];
+    const stack = byId(stackId);
+    assert.ok(stack && stack.type === "stack", `no stack "${stackId}" in deck.json`);
+    const children = (stack.children ?? []).map((c) => c.id);
     assert.ok(children.includes(row.child), `the rail's "${row.child}" is not a child of "${stackId}" (${children.join(", ")})`);
-    const icon = /icon:\s*"([^"]+)"/.exec(row.rest)?.[1];
-    if (icon) assert.ok(existsSync(join(ROOT, ...icon.split("/"))), `the rail's icon ${icon} is missing`);
+    if (row.icon) assert.ok(existsSync(join(ROOT, ...row.icon.split("/"))), `the rail's icon ${row.icon} is missing`);
   }
-  // And every child of the stack is a row: an orphan child would never be shown.
-  for (const id of children) assert.ok(rows.some((r) => r.child === id), `"${id}" is in the stack but has no rail row`);
+
+  // Every child of the sidepanel is a row: an orphan would never be shown. The screens stack
+  // keeps one child (the tab's own panes) that is reached by closing the board, not by a row.
+  const sidepanel = byId("sidepanel");
+  for (const id of (sidepanel.children ?? []).map((c) => c.id)) {
+    assert.ok(rows.some((row) => row.child === id && (row.stack ?? "sidepanel") === "sidepanel"), `"${id}" is in the sidepanel but has no rail row`);
+  }
 });
 
 test("npm test runs every test file", () => {

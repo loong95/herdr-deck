@@ -7,6 +7,7 @@
 // session JSONL, read-only.
 // A bridge on this machine or another one: the header says which.
 import { View, div, image } from "gpui-kit";
+import { markdownView } from "./mdblocks.js";
 import { v_flex, h_flex, TextView, InputState, Input, ScrollHandle } from "gpui-base";
 import { theme, props, appHome, readTextFile, watchFolder, home, settings, focused, panes, nextCommand, run, closeOverlay, exec, shared, setShared } from "herdr";
 import { Buffer } from "buffer";
@@ -1532,7 +1533,7 @@ export default class PiGui extends View {
     if (r.kind === "user") {
       return v_flex().id(r.key).flex_none().w_full().p(8).rounded(8).bg(t.raised)
         .child(div().text_size(10).text_color(t.dim).child("You"))
-        .child(TextView.markdown("m" + r.key, r.text));
+        .child(markdownView(r.key, r.text, t, { mono, size: 13 }));
     }
     if (r.kind === "assistant") {
       // Mermaid fences come back as PNGs the bridge rendered; until then a line
@@ -1540,7 +1541,7 @@ export default class PiGui extends View {
       // machine renders them there, so the PNG is fetched before it can be drawn.
       const diagrams = this.diagramPaths(r);
       return v_flex().id(r.key).flex_none().w_full().p(8).rounded(8).bg(t.canvas)
-        .child(TextView.markdown("m" + r.key, r.text).text_size(13))
+        .child(markdownView(r.key, r.text, t, { mono, size: 13 }))
         .when(diagrams.length > 0, (e) => e.children(diagrams.map((path, index) =>
           div().id(r.key + "-d" + index).mt(8).w_full().max_h(460).overflow_hidden()
             .child(image(path)))))

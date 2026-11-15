@@ -1,0 +1,218 @@
+# pi-gui — a native GUI for Pi inside Herdr
+
+Herdr mods draw native GPUI: no webview, no HTML. So the GUI is a real Herdr
+panel that talks to Pi over localhost HTTP.
+
+## Pieces
+
+| Piece | Path | Role |
+|---|---|---|
+| bridge (Pi extension) | `~/.pi/agent/extensions/pi-gui-bridge/` | `index.ts` (server) + `rows.ts` (display model) + `rows.test.mjs` |
+| panel (Herdr mod) | `~/.config/herdr-app/mods/pi-gui/` | transcript, pickers, composer |
+
+Pi writes `~/.pi/agent/gui/<sessionId>.json` with `{port, token, pid, sessionId,
+cwd, terminal, space, tab}`. Herdr gives a terminal no env vars naming it, so the
+bridge finds its own terminal by matching `process.pid` against
+`hc get <terminal> --json` → `foreground.pid`, and rewrites the file once it knows.
+
+Set `PI_GUI_BRIDGE=0` to load the extension without its server.
+
+## Open it
+
+```sh
+# beside the pi terminal t7 (terminal id from: herdr-app ls)
+herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"t7"}}'
+# a tab whose only pane is the GUI, bound by folder
+herdr-app do tab.new '{"mod":"pi-gui","props":{"cwd":"D:/Projects/api"}}'
+# the key: ctrl-alt-p (keys.json -> "mod.open:pi-gui") shows the panel alone,
+# or the terminal alone, or opens the panel if this tab has none yet.
+# open with a picker already up: "model" | "thinking" | "command" | "file" | "session"
+herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"t7","open":"model"}}'
+# …or with the composer already holding text
+herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"t7","seed":"/co"}}'
+```
+
+By command instead of the key:
+
+```sh
+herdr-app do mod.open --name pi-gui   # the switch; works from any state
+herdr-app do pi-gui.toggle            # same switch while the panel is on screen
+herdr-app do pi-gui.terminal          # leave the panel for the terminal alone
+```
+
+The command palette does **not** list it: `mod.open` takes a required `name`
+argument and the palette only offers commands it can run on its own, and a mod's
+`<mod>.<command>` is never listed. Shell and keys.json are the command forms.
+`pi-gui.toggle` (the mod's own command) is delivered to copies that are on
+screen, so it answers while the panel is visible and reports "unknown command"
+once the panel is zoomed away; `mod.open` is the one that always works.
+
+There is also a clickable entry: right-click a Pi terminal →
+**Pi panel** (`mods/menu-pi`, a clone of Herdr's `menu` with one row added, wired
+by `"terminal_menu": "menu-pi"` in `layouts/main-mr.json`). The row runs
+`mod.open {name: "pi-gui"}`, so it is the same switch, and its hint shows
+`ctrl-alt-p`. Shift+right-click reaches it even when the program owns the mouse.
+
+`ctrl-alt-p` is one key and one visible thing: the key runs `mod.open:pi-gui`,
+which starts a copy as an overlay; that copy reads live data and turns itself
+into what you asked for —
+
+| What the tab shows now | What the key does |
+|---|---|
+| a Pi terminal and the panel (split) | zooms the panel: it alone fills the tab |
+| the panel alone | unzooms, then zooms the terminal: it alone fills the tab |
+| the terminal alone | unzooms, then zooms the panel |
+| no panel at all | splits one in beside the terminal, then zooms it |
+
+`pane.zoom` is "show only this pane, or all again", so swapping from one zoomed
+pane to the other is unzoom-then-zoom, one command per tick 260 ms apart; the
+hidden side keeps running (a Pi in a zoomed-away pane is still working).
+
+Losing and finding the bridge: a registration can outlive a killed Pi, so every
+candidate is probed before use, and a candidate that matches nothing about this
+panel is only taken when it is the *only* Pi on the machine — a dead Pi in another
+folder can never hijack the panel. While unbound the panel watches
+`~/.pi/agent/gui` with `watchFolder` and also looks again every 3 s, so a Pi
+started or restarted later binds by itself. When nothing answers it says so with
+numbers: "No live Pi bridge — 3 registrations, 1 for this tab or folder, 0
+answering".
+
+Binding order: `props().terminal` > the Pi in the tab you are looking at
+(`info.tab` vs `focused().tab`) > same folder > read-only JSONL fallback. Every
+candidate is probed first, so a registration left by a force-killed Pi is skipped.
+
+`mod.json` sets `"focusable": true`, so `pane.go` hands the panel the keyboard;
+it focuses its own composer on open and on click.
+
+## What the panel does
+
+- **Transcript** in chat order and **process folded away**: runs of thinking and
+  tool calls collapse into one row by default —
+  `▸ 12 steps · codemode ×8, read ×3 · thinking 1.4k  show` — so the panel reads
+  as a conversation. Clicking the row unfolds the individual steps, where each
+  tool card still opens to show its result. Answers render as markdown
+  (`TextView.markdown`) in user/assistant bubbles. The column is
+  `flex_col_reverse`, so the newest row sits at the bottom. **Only the newest
+  screenful is held and drawn** (40 rows): the poll asks for
+  `/state?…&rows=40`, older pages come from `/rows?before=<index>&count=40` when
+  the `↑ earlier · N rows` chip at the top is clicked, and the header reads
+  `40 / 200 rows`. A 400-row session used to cost a 670 KB response and a full
+  re-render on every poll. The scroll area
+  carries a `ScrollHandle` and pins itself to the newest row after every update
+  (`scroll_to_item(0)`), so a growing session never throws the view back to the
+  top. Scrolling by hand stops that follow and shows a **↓ latest** chip that
+  turns it back on.
+- **Model chip** → picker over `ctx.modelRegistry.getAvailable()`; `pi.setModel`.
+- **Thinking chip** → off/minimal/low/medium/high/xhigh/max; `pi.setThinkingLevel`.
+- **Sessions chip** → the folder's sessions (`SessionManager.list`, newest first,
+  the current one marked ●) and switching to one, which replaces the live session
+  in place. A brand-new session has no entries, so it is added to the list by hand.
+- **Typed `/` and `@`** — the composer is the picker's filter, there are no
+  buttons. A `/` or `@` word at the end of the composer opens the list, typing
+  refines it, deleting the word closes it, and Enter completes the top match into
+  the composer (it does not send). Then:
+  - `/name` → `pi.getCommands()` (extension commands, prompt templates, skills)
+    plus panel builtins: /model, /thinking, /compact, /stop. Enter runs a builtin
+    in the panel; anything else goes through
+    `sendUserMessage("/name …", {expandPromptTemplates: true})`.
+  - `@path` → file search in the session's cwd (breadth-first, skips
+    node_modules, dist, .git, …), so Enter inserts `@path` and Pi resolves it.
+- **`⇤ Terminal` button** in the header — the panel and the terminal trade places
+  with one click. It is there because the right-click entry lives on the
+  *terminal*, which the panel is hiding: without it, once the panel filled the
+  tab there was nothing to click to get back.
+- **Blocked banner** — when another extension opens a Pi dialog, the panel shows
+  what Pi is waiting for plus **Go to terminal** (`terminal.peek`). Pi's dialogs
+  are rendered by its own TUI, so that is where they are answered.
+- **Pasted images** — `InputState` reports a paste with no text as `paste_other`;
+  a mod cannot read clipboard bytes (`read_from_clipboard` is text only), so the
+  panel asks the system clipboard for a bitmap: it tries
+  `powershell -NoProfile -STA … Clipboard.GetImage()` (with four attempts, since
+  some apps publish the image a beat late), then `pwsh`, then `pngpaste` — no
+  platform gate, whichever exists answers — saves the bitmap as a temp PNG and
+  reads that file back as base64. `herdr-app do pi-gui.paste` runs the same thing
+  from a command, and when it finds nothing the panel names every attempt and its
+  exit code. The image waits as a `🖼 name ×` chip above the
+  composer (up to 4, × drops one) and goes out with the next send as Pi's own
+  image content block: `POST /prompt {message, images:[{data, mimeType}]}` →
+  `sendUserMessage([{type:"text"},{type:"image"}…])`.
+  `props {"attach": "<path>"}` attaches a file at startup, for checks.
+- **Send / Stop** → `/prompt` (steer when busy) and `/abort`.
+
+## Bridge protocol
+
+```
+GET  /state?t=<token>&since=<version>&wait=<sec>   long-poll; 204 when nothing changed
+GET  /meta?t=<token>                              model, thinking levels, models, commands
+GET  /files?t=<token>&q=<text>                    @-mention candidates in cwd
+GET  /sessions?t=<token>                          sessions of this folder, newest first
+POST /prompt?t=<token>   {"message":"...","images":[{"data":"<base64>","mimeType":"image/png"}]}
+                                                  real user message (steer when busy)
+GET  /rows?t=<token>&before=<index>&count=<n>    one page of older rows
+POST /model?t=<token>    {"provider":"…","id":"…"}
+POST /thinking?t=<token> {"level":"high"}
+POST /sessions/switch?t=<token> {"id":"…"}        refuses while Pi is busy
+POST /compact?t=<token>
+POST /abort?t=<token>
+```
+
+`/state` returns `{version, state:{sessionId, sessionFile, name, cwd, model, busy,
+status, prompt, usage, rows, from, total}}` — `rows` is a window of the
+transcript (`rows=<n>`, default 40), `from` is its index and `total` the whole
+row count. The built rows are cached in the bridge and rebuilt only when the
+branch's length, last entry id or the streaming text length changes, so a bump
+that carries no new content does not re-walk a long session. `rows` is already the display model
+(`user`, `assistant`, `thinking`, `tool` with `summary` and `result`): shaping
+happens in the bridge, so the panel stays a renderer. Events are coalesced to one
+bump per 120 ms, so token streaming does not cost one request per token.
+
+Two things worth knowing:
+
+- `ctx.switchSession` only exists on the *command* context, so the panel's switch
+  goes through the bridge's own `/gui-switch-session` command (by id, since paths
+  have spaces). Its name is filtered out of the panel's command list.
+- A session switch reloads extensions, so the bridge closes its server, comes back
+  on a new port and rewrites its registration; the panel notices the drop, waits
+  2.5 s and rediscovers. That is expected, not a failure.
+
+The bridge only starts when `ctx.mode === "tui"`; RPC and print-mode sessions
+already have a client driving them. A bridge failure is swallowed so it can
+never break Pi.
+
+## Tests
+
+```sh
+cd ~/.pi/agent/extensions/pi-gui-bridge
+node --test rows.test.mjs
+```
+
+Covers the display model only (row building, tool summaries, trimming), which is
+why it lives in `rows.ts` with no I/O. The panel and the server are checked by
+`herdr-app check` and by looking at the window.
+
+## Fallback: read-only
+
+With no live bridge (Pi not running, or an old Pi), the panel falls back to
+Pi's session JSONL — `~/.pi/agent/sessions/--<cwd>--/*.jsonl`, watched with
+`watchFolder` — and renders the active branch read-only.
+
+## Known limits
+
+- Local machine only. A Pi on another machine needs its own bridge plus a
+  tunnel (`hc exec --on vps`) to reach its port from here.
+- Image paste uses PowerShell's clipboard (Windows) or `pngpaste` (macOS, if
+  installed). Linux has no command wired yet; there the paste reports
+  "Clipboard holds no image" plus the attempts it made. Typing `@path` to an
+  image file still works everywhere.
+- The transcript shows the active branch, newest 400 rows; the session file keeps
+  all of it.
+- A space named after its folder turns into `~` when the Pi inside it runs with
+  the home folder as its *process* cwd (Pi started in `~` and continuing a session
+  elsewhere): Herdr names unnamed spaces after their first terminal's live folder.
+  `space.rename` pins the name; the panel keeps showing the session's own cwd.
+- Pi's own dialogs are answered in the terminal; the panel only points at them.
+- The key drives `pane.zoom`, so if you zoom by hand (`ctrl-shift-z`) one press
+  may only put the tab back in order before the next press does what you meant.
+  `terminal.park`/`terminal.keep` was tried instead and is worse: a parked
+  terminal leaves its layout column empty rather than letting the panel fill it,
+  and the terminal id has to be remembered while it has no pane.

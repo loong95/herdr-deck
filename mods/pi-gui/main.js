@@ -595,6 +595,12 @@ export default class PiGui extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
+        // The app hands a command to every copy on screen, so two panels would both swap,
+        // both paste. The first one acts; the others see it here and skip it.
+        const last = shared("pi-gui.command");
+        const now = Date.now();
+        if (last && last.command === command && now - last.at < 150) continue;
+        setShared("pi-gui.command", { command, at: now });
         if (command === "focus") {
           // Coming in through ctrl-alt-p: if this copy is bound to a Pi in another
           // tab (the only bridge that was alive at the time), look again now.

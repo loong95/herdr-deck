@@ -99,6 +99,24 @@ old hand-copied mods into links.
 The layout is one file and lands in a folder full of other layouts, so it is linked
 file by file (a hard link, which needs no admin rights) rather than as a folder.
 
+## Keys
+
+One file outside this repo has to know about the deck: `keys.json`. It takes the deck's keys
+**only while this layout shows**, in a `layout:deck` section — a `global` entry would keep the
+key on every other layout too. keys.deck.json is the block to merge in:
+
+```json
+{
+  "layout:deck": {
+    "ctrl-alt-p": "mod.open:pi-gui"
+  }
+}
+```
+
+Sections are `global`, `layout:<name>`, `terminal` and `mod:<name>`, and the more
+specific one wins (Herdr's own AGENTS.md). Do not put a `mod:deck` section in: with one,
+Flockbook's author found no key worked at all.
+
 ## Pi on another machine
 
 The panel is not tied to this computer. A Pi running on a Herdr machine

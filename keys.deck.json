@@ -1,0 +1,5 @@
+{
+  "layout:deck": {
+    "ctrl-alt-p": "mod.open:pi-gui"
+  }
+}

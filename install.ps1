@@ -69,21 +69,33 @@ foreach ($t in $targets) {
 }
 
 # --- the layout: one file, and the folder it lands in holds other layouts too, so it
-# is linked file by file instead of the whole folder. A hard link needs no admin
-# rights and reads as an ordinary file to Herdr.
+# goes in file by file instead of junctioning the folder. A hard link needs no admin
+# rights and reads as an ordinary file to Herdr — but it cannot cross drives, and a
+# repo on D: with Herdr's home on C: is exactly that, so a symlink is tried next
+# (that one does need admin or Developer Mode) and a copy is the last resort.
 $layoutSource = Join-Path $repo "layouts/deck.json"
 $layoutLive = Join-Path $env:USERPROFILE ".config/herdr-app/layouts/deck.json"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $layoutLive) | Out-Null
 if ($Link) {
-  $already = (Test-Path $layoutLive) -and ((Get-Item $layoutLive -Force).LinkType -eq "HardLink")
-  if ($already) { Write-Host "already linked: $layoutLive" }
+  $kind = if (Test-Path $layoutLive) { (Get-Item $layoutLive -Force).LinkType } else { $null }
+  if ($kind -in @("HardLink", "SymbolicLink")) { Write-Host "already linked: $layoutLive" }
   else {
     if (Test-Path $layoutLive) {
       if (-not $Replace) { throw "$layoutLive exists; rerun with -Replace to overwrite it" }
       Remove-Item $layoutLive -Force
     }
-    New-Item -ItemType HardLink -Path $layoutLive -Target $layoutSource | Out-Null
-    Write-Host "linked $layoutLive -> $layoutSource"
+    $linked = $false
+    foreach ($type in @("HardLink", "SymbolicLink")) {
+      try { New-Item -ItemType $type -Path $layoutLive -Target $layoutSource -ErrorAction Stop | Out-Null; $linked = $true; break }
+      catch { }
+    }
+    if ($linked) { Write-Host "linked $layoutLive -> $layoutSource" }
+    else {
+      Copy-Item $layoutSource $layoutLive -Force
+      Write-Host "copied $layoutSource -> $layoutLive"
+      Write-Host "  (a hard link cannot cross drives and a symlink needs admin here, so this one is a copy:"
+      Write-Host "   rerun install.ps1 after editing the layout file)"
+    }
   }
 } else {
   Copy-Item $layoutSource $layoutLive -Force

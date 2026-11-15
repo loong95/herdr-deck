@@ -27,8 +27,11 @@ after changing anything here (or install once with `-Link` and edit live).
 ```
 
 `-Link` makes the live folders junctions to this repo, so the running app reads
-these files directly (Herdr hot-reloads a mod on save; Pi needs a restart for
-extension changes). It refuses to replace a folder that is not already a link
+these files directly. Herdr reloads a mod on save when it watches the mod folder
+itself; a junction is skipped by that watcher, so a linked panel keeps drawing
+the code it started with until Herdr restarts (a save does reload an unlinked
+copy, which is the way to see a change without restarting). Pi needs a restart
+for extension changes either way. It refuses to replace a folder that is not already a link
 pointing here.
 
 ## Pi on another machine

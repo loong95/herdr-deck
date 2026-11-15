@@ -82,8 +82,18 @@ into what you asked for —
 | no panel at all | splits one in beside the terminal, then zooms it |
 
 `pane.zoom` is "show only this pane, or all again", so swapping from one zoomed
-pane to the other is unzoom-then-zoom, one command per tick 260 ms apart; the
-hidden side keeps running (a Pi in a zoomed-away pane is still working).
+pane to the other is unzoom-then-zoom; the hidden side keeps running (a Pi in a
+zoomed-away pane is still working).
+
+Each step **waits for the change it asked for** instead of sleeping a tick: the
+pane list a mod reads is the host's last snapshot, so "the split is up" is only
+true once `panes()` says so (`waitFor`, 40 ms apart, deadline 4–5 s, and
+`null` at the deadline so the overlay always closes). That snapshot guess used
+to be "one command per 260 ms", which is why a right-click sometimes left the
+**split** up instead of the panel alone: the pane was not in the list yet when
+the zoom step looked, the step was skipped, and the overlay closed over a split
+tab. A tab that already has a panel is never split again — two panels in one tab
+are two copies of the same conversation.
 
 Losing and finding the bridge: a registration can outlive a killed Pi, so every
 candidate is probed before use, and a candidate that matches nothing about this
@@ -124,6 +134,17 @@ it focuses its own composer on open and on click.
   (`scroll_to_item(0)`), so a growing session never throws the view back to the
   top. Scrolling by hand stops that follow and shows a **↓ latest** chip that
   turns it back on.
+- **A run in progress is drawn, not implied.** Streaming text shows Pi talking,
+  but a long tool call, a slow first token or a remote round trip shows nothing
+  at all — so while `busy` (or while a send is in flight) the transcript gains a
+  spinner row at the newest position (`⠋ Pi is working`) and the header's status
+  chip animates (`working ⠋`). Both are `frames`: GPUI swaps the strings at 90 /
+  120 ms by itself, only while on screen, so no timer, no `notify` and no
+  re-render per tick. The empty state's "Loading…" animates the same way.
+  The children list is built above the `return` because the pane's tree is one
+  huge expression and the loader rejects it once a call inside it (here
+  `.children(…)`) is wrapped once more: `Unexpected token ';'` at the end of the
+  statement, with no line to blame.
 - **Model chip** → picker over `ctx.modelRegistry.getAvailable()`; `pi.setModel`.
 - **Thinking chip** → off/minimal/low/medium/high/xhigh/max; `pi.setThinkingLevel`.
 - **Sessions chip** → the folder's sessions (`SessionManager.list`, newest first,

@@ -54,6 +54,10 @@ async function clipboardImagePath() {
 }
 
 const TAIL = 400;
+// A run in progress draws its own spinner. `frames` swaps the strings natively
+// and only while the element is on screen, so no timer of ours and no repaint
+// per tick: the panel stays quiet while Pi works.
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function slug(path) {
   // Pi names a folder's sessions after its cwd: separators become "-", and the
@@ -370,34 +374,75 @@ function stepsSummary(rows) {
   return parts.join("  ·  ");
 }
 
+/** A pause that belongs to this view: it dies with the pane that asked for it. */
+function sleep(cx, ms) {
+  return new Promise((resolve) => { cx.timer.after(ms, () => resolve()); });
+}
+
 /**
- * What to run, tick by tick, to swap the terminal and the panel in one tab.
- * pane.zoom means "show only this pane, or all again", so going from one zoomed
- * pane to the other is unzoom, then zoom — one command per tick.
+ * The pane list a mod reads is the host's *last snapshot*, not the window: a
+ * pane.split that was just issued is not in it yet. Waiting for the change it
+ * asked for is the difference between "the panel fills the tab" and "the panel
+ * ended up as a split beside the terminal" — the right-click bug this replaced,
+ * which happened whenever the guess (one command per 260 ms tick) came up short.
+ * A deadline answers null instead of hanging, so the overlay always closes.
+ */
+async function waitFor(cx, done, ms) {
+  const until = Date.now() + (ms || 4000);
+  for (;;) {
+    const hit = done();
+    if (hit) return hit;
+    if (Date.now() >= until) return null;
+    await sleep(cx, 40);
+  }
+}
+
+/** Focus a pane and leave it alone in the tab, once the host agrees it is. */
+async function showOnly(cx, pane) {
+  run("pane.focus", { pane });
+  const now = panes().find((p) => p.pane === pane) || null;
+  if (now && now.zoomed === true) return;
+  run("pane.zoom", { pane });
+  await waitFor(cx, () => (panes().find((p) => p.pane === pane) || {}).zoomed === true, 1500);
+}
+
+/** …and back to the whole split, for the pane whose zoom is in the way. */
+async function zoomOff(cx, pane) {
+  run("pane.zoom", { pane });
+  await waitFor(cx, () => (panes().find((p) => p.pane === pane) || {}).zoomed !== true, 1500);
+}
+
+/** Split the panel in beside the clicked pane, then let it have the tab. */
+async function splitPanel(cx, tab, target, anchor) {
+  // A tab that already has one keeps it: two panels in a tab are two copies of
+  // the same conversation, and the second one is never the one asked for.
+  let gui = panes().find((p) => p.mod === "pi-gui" && p.tab === tab) || null;
+  if (!gui) {
+    run("pane.split", { direction: "right", ...(anchor ? { pane: anchor } : {}), mod: "pi-gui", props: target });
+    gui = await waitFor(cx, () => panes().find((p) => p.mod === "pi-gui" && p.tab === tab), 5000);
+  }
+  if (gui) await showOnly(cx, gui.pane);
+}
+
+/**
+ * What to run to swap the terminal and the panel in one tab. pane.zoom means
+ * "show only this pane, or all again", so going from one zoomed pane to the
+ * other is unzoom, then zoom.
  */
 function swapSteps(tab, target, anchor) {
   const tabPanes = panes().filter((p) => p.tab === tab);
   const gui = tabPanes.find((p) => p.mod === "pi-gui") || null;
   const term = tabPanes.find((p) => p.terminal) || null;
-  const freshGui = () => panes().find((p) => p.mod === "pi-gui" && p.tab === tab) || null;
-  // A split lands beside the focused pane; a right-click names one that need not
-  // be focused, so the pane clicked is the anchor when we know it.
-  const split = (props) => run("pane.split", { direction: "right", ...(anchor ? { pane: anchor } : {}), mod: "pi-gui", props });
   const steps = [];
-
   if (term && term.zoomed === true) {
-    steps.push(() => run("pane.zoom", { pane: term.pane }));                      // back to the split
-    steps.push(() => { if (!freshGui()) split(target); });
-    steps.push(() => { const g = freshGui(); if (g) { run("pane.focus", { pane: g.pane }); run("pane.zoom", { pane: g.pane }); } });
+    steps.push((cx) => zoomOff(cx, term.pane).then(() => splitPanel(cx, tab, target, anchor)));
   } else if (gui && gui.zoomed === true) {
-    steps.push(() => run("pane.zoom", { pane: gui.pane }));                       // back to the split
-    steps.push(() => { if (term) { run("pane.focus", { pane: term.pane }); run("pane.zoom", { pane: term.pane }); } });
+    steps.push((cx) => zoomOff(cx, gui.pane));
+    steps.push((cx) => (term ? showOnly(cx, term.pane) : null));
   } else if (gui) {
-    steps.push(() => run("pane.focus", { pane: gui.pane }));
-    steps.push(() => { const g = freshGui(); if (g) run("pane.zoom", { pane: g.pane }); });
+    steps.push((cx) => showOnly(cx, gui.pane));
   } else if (target && target.terminal) {
-    steps.push(() => split(target));
-    steps.push(() => { const g = freshGui(); if (g) { run("pane.focus", { pane: g.pane }); run("pane.zoom", { pane: g.pane }); } });
+    steps.push((cx) => splitPanel(cx, tab, target, anchor));
   }
   return steps;
 }
@@ -412,23 +457,19 @@ function showSteps(tab, target, anchor) {
   const gui = tabPanes.find((p) => p.mod === "pi-gui") || null;
   const term = tabPanes.find((p) => p.terminal) || null;
   const steps = [];
-  if (!gui) {
-    // A zoomed terminal leaves no room to split into: show the tab again first.
-    if (term && term.zoomed === true) steps.push(() => run("pane.zoom", { pane: term.pane }));
-    steps.push(() => run("pane.split", { direction: "right", ...(anchor ? { pane: anchor } : {}), mod: "pi-gui", props: target }));
+  if (gui) {
+    steps.push((cx) => showOnly(cx, gui.pane));
+  } else {
+    // A zoomed terminal leaves no room to split into: show the whole tab first.
+    if (term && term.zoomed === true) steps.push((cx) => zoomOff(cx, term.pane));
+    steps.push((cx) => splitPanel(cx, tab, target, anchor));
   }
-  steps.push(() => {
-    const g = panes().find((p) => p.mod === "pi-gui" && p.tab === tab) || null;
-    if (!g) return;
-    run("pane.focus", { pane: g.pane });
-    if (g.zoomed !== true) run("pane.zoom", { pane: g.pane });
-  });
   return steps;
 }
 
-/** One command per tick: zoom and pane changes settle in the background. */
-function runSteps(cx, steps) {
-  steps.forEach((step, index) => cx.timer.after(index * 260, () => step()));
+/** One step at a time; a step may wait for the host to catch up. */
+async function runSteps(cx, steps) {
+  for (const step of steps) await step(cx);
 }
 
 export default class PiGui extends View {
@@ -472,8 +513,15 @@ export default class PiGui extends View {
       const steps = fresh && fresh.pane ? showSteps(tab, target, anchor) : swapSteps(tab, target, anchor);
       if (!steps.length) return; // nothing to swap with: leave the overlay as it is
       this.trampoline = true;
-      runSteps(cx, steps);
-      cx.timer.after(steps.length * 260 + 80, () => closeOverlay(overlay));
+      // The overlay leaves once the steps have really landed, not on a clock; the
+      // guard is only for a host that stops answering, so it can never stay up.
+      const guard = cx.timer.after(9000, () => closeOverlay(overlay));
+      cx.spawn(async (cx) => {
+        try { await runSteps(cx, steps); } finally {
+          try { guard.cancel(); } catch {}
+          closeOverlay(overlay);
+        }
+      });
       return;
     }
 
@@ -1269,6 +1317,26 @@ export default class PiGui extends View {
     const modelChip = meta && meta.model ? meta.model.id : (state && state.model ? state.model : null);
     const level = meta && meta.thinking ? meta.thinking.level : null;
     const busy = Boolean(state && state.busy);
+    // Sending counts as working: the POST is out and the first snapshot has not
+    // landed yet, which is exactly the moment the panel used to look asleep.
+    const working = busy || this.sending;
+    // The transcript's children, built before the tree: the column is reversed, so
+    // the run's spinner is placed first (the bottom) and the empty hint only fills
+    // an idle panel. Built here, not inside .children(), because that one call is
+    // already at the loader's limit for a single expression.
+    const body = groups.length
+      ? groups.map((g) => this.groupEl(g, t, mono, cx))
+      : working ? []
+      : [div().p(8).text_color(t.dim).child(this.error
+          || (this.bridge ? "No messages yet — type below, or / for commands, @ for files"
+          : this.scan
+            ? (this.scan.error
+              ? "No live Pi bridge" + this.why() + " — " + this.scan.error + ". Check the machine in Herdr (hc machine ls)."
+              : "No live Pi bridge" + this.why() + " — " + this.scan.registrations + " registration" + (this.scan.registrations === 1 ? "" : "s") +
+                ", " + this.scan.matching + " for this tab or folder, 0 answering. Start or restart Pi " +
+                (this.machine ? "there" : "here") + "; the panel binds as soon as it appears.")
+            : div().frames(["Loading", "Loading.", "Loading..", "Loading..."], 400)))];
+    const items = working ? [this.busyRow(t)].concat(body) : body;
     const live = state ? state.status : null;
     const usage = state && state.usage && typeof state.usage.tokens === "number" ? Math.round(state.usage.tokens / 1000) + "k" : null;
 
@@ -1295,7 +1363,11 @@ export default class PiGui extends View {
           this.picker && this.picker.kind === "session")))
         .when(Boolean(this.bridge), (e) => e.child(chip("pi-terminal", "⇤ Terminal", (_ev, cx) => this.showTerminal(cx), false)))
         .when(busy, (e) => e.child(chip("pi-stop", "Stop", (_ev, cx) => this.abort(cx), false)))
-        .when(Boolean(live), (e) => e.child(chip("pi-live", String(live), null, live === "working")))
+        // The run's own state, in motion while it works: a still "working" reads
+        // as a panel that stopped listening once a tool call runs for a minute.
+        .when(Boolean(live), (e) => e.child(h_flex().id("pi-live").px(7).py(2).rounded(5).text_size(10)
+          .bg(live === "working" ? t.selected : t.raised).text_color(live === "working" ? t.foreground : t.muted)
+          .child(div().frames(live === "working" ? SPIN.map((frame) => "working " + frame) : [String(live)], 120))))
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.dim)
           .child(count === total ? String(count) + " rows" : count + " / " + total + " rows")))
       .when(Boolean(state && state.prompt), (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center()
@@ -1310,17 +1382,7 @@ export default class PiGui extends View {
           // Scrolling by hand stops the follow; the chip below brings it back.
           .on_scroll_wheel((_e, cx) => { if (this.follow) { this.follow = false; cx.notify(); } })
           .px(12).py(10).gap(8)
-          .children(groups.length
-            ? groups.map((g) => this.groupEl(g, t, mono, cx))
-            : [div().p(8).text_color(t.dim).child(this.error
-                || (this.bridge ? "No messages yet — type below, or / for commands, @ for files"
-                : this.scan
-                  ? (this.scan.error
-                    ? "No live Pi bridge" + this.why() + " — " + this.scan.error + ". Check the machine in Herdr (hc machine ls)."
-                    : "No live Pi bridge" + this.why() + " — " + this.scan.registrations + " registration" + (this.scan.registrations === 1 ? "" : "s") +
-                      ", " + this.scan.matching + " for this tab or folder, 0 answering. Start or restart Pi " +
-                      (this.machine ? "there" : "here") + "; the panel binds as soon as it appears.")
-                  : "Loading…"))])
+          .children(items)
           // Reversed column: the last child is the visual top, where older rows go.
           .when(earlier > 0, (e) => e.child(h_flex().id("pi-earlier").py(4).w_full().justify_center()
             .rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -1343,6 +1405,18 @@ export default class PiGui extends View {
         .when(Boolean(this.bridge), (e) => e.child(h_flex().id("pi-send").h(32).px(14).items_center().rounded(8).bg(t.solid).text_color(t.solid_foreground).text_size(12).cursor_pointer()
           .on_click((_ev, cx) => this.send(cx)).child(this.sending ? "…" : "Send")))
         .when(!this.bridge, (e) => e.child(div().h(32).px(10).flex().items_center().text_size(11).text_color(t.dim).child("read-only · no bridge")))));
+  }
+
+  /**
+   * The run's own row. Streaming text shows that Pi is talking, but a long tool
+   * call, a slow first token or a remote round trip shows nothing at all — and a
+   * panel with no motion reads as a panel that died. The spinner is `frames`, so
+   * it ticks in GPUI: no timer here, no notify, no rerender.
+   */
+  busyRow(t) {
+    return h_flex().id("pi-working").flex_none().px(8).py(3).gap(6).items_center()
+      .child(div().text_size(11).text_color(t.muted).frames(SPIN, 90))
+      .child(div().text_size(10).text_color(t.dim).child(this.sending ? "sending…" : "Pi is working"));
   }
 
   /** One chip per pasted image, with a × to drop it before sending. */

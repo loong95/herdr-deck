@@ -397,12 +397,21 @@ async function waitFor(cx, done, ms) {
   }
 }
 
-/** Focus a pane and leave it alone in the tab, once the host agrees it is. */
+/**
+ * Focus a pane and leave it alone in its tab.
+ *
+ * `pane.focus` already moves the tab's zoom to the pane it focuses — measured,
+ * not assumed: with the terminal zoomed, focusing the panel moves `zoomed` from
+ * the terminal to the panel. So a tab that was zoomed on the *other* pane needs
+ * nothing more, and a `pane.zoom` on top of that would toggle the zoom back off
+ * — which is exactly the split a right-click used to be left with. Only a tab
+ * zoomed on nothing gets the extra call.
+ */
 async function showOnly(cx, pane) {
+  const mine = panes().find((p) => p.pane === pane) || null;
+  const zoomed = mine ? panes().find((p) => p.tab === mine.tab && p.zoomed === true) || null : null;
   run("pane.focus", { pane });
-  const now = panes().find((p) => p.pane === pane) || null;
-  if (now && now.zoomed === true) return;
-  run("pane.zoom", { pane });
+  if (!zoomed) run("pane.zoom", { pane });
   await waitFor(cx, () => (panes().find((p) => p.pane === pane) || {}).zoomed === true, 1500);
 }
 

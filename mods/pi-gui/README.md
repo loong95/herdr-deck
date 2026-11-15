@@ -85,6 +85,14 @@ into what you asked for —
 pane to the other is unzoom-then-zoom; the hidden side keeps running (a Pi in a
 zoomed-away pane is still working).
 
+`pane.focus` **moves the tab's zoom to the pane it focuses** (measured: with
+the terminal zoomed, focusing the panel moves `zoomed` from the terminal to the
+panel). So showing a pane alone is one call when the tab is already zoomed on
+the other side, and `pane.zoom` on top of that toggles the zoom back **off** —
+that is what left a right-click as a split whenever the terminal was the zoomed
+pane, both before and after the timing fix. Only a tab zoomed on nothing gets
+`pane.zoom`.
+
 Each step **waits for the change it asked for** instead of sleeping a tick: the
 pane list a mod reads is the host's last snapshot, so "the split is up" is only
 true once `panes()` says so (`waitFor`, 40 ms apart, deadline 4–5 s, and

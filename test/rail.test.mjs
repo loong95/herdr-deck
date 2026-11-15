@@ -1,5 +1,5 @@
-// Drives the MR panel and the dock together outside Herdr. The fake layout document is
-// mutated by the same commands the dock issues, so what is checked is the protocol
+// Drives the MR panel and the rail together outside Herdr. The fake layout document is
+// mutated by the same commands the rail issues, so what is checked is the protocol
 // between the two mods, not just each one alone.
 import fs from "node:fs";
 import os from "node:os";
@@ -12,7 +12,7 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const HOME = process.env.MODS_HOME ?? ROOT;
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mod-harness-"));
 const ALL = `${HOME}/mods/gitlab-mr/main.js`;
-const DOCK = `${HOME}/mods/dock/main.js`;
+const RAIL = `${HOME}/mods/rail/main.js`;
 
 // --- the fake host ---
 const tree = {
@@ -20,7 +20,7 @@ const tree = {
   children: [
     { id: "main", type: "block" },
     { id: "sidepanel", type: "stack", hidden: true, active: "gitlab-mr", children: [{ id: "gitlab-mr", type: "block" }] },
-    { id: "dock", type: "block" },
+    { id: "rail", type: "block" },
   ],
 };
 const node = (id, n = tree) => (n.id === id ? n : (n.children ?? []).map((c) => node(id, c)).find(Boolean));
@@ -102,7 +102,7 @@ const broken = async (cmd, args) => {
 const reset = () => { calls = []; globalThis.__calls = calls; };
 
 const { GitlabMr, pathOfRemote, projectOf, say, ago } = await loadMod(ALL, ["GitlabMr", "pathOfRemote", "projectOf", "say", "ago"]);
-const { Dock } = await loadMod(DOCK, ["Dock"]);
+const { Rail } = await loadMod(RAIL, ["Rail"]);
 
 let fails = 0;
 const eq = (label, got, want) => {
@@ -146,16 +146,16 @@ p.next = 0; p.wasShown = true;
 p.tick(cx);
 await settle();
 eq("hidden: a later tick does not ask glab", calls.filter((c) => c.cmd === "glab").length, 0);
-eq("badge left for the dock", sharedStore["gitlab-mr.badge"], { n: 4, err: false, ready: true });
+eq("badge left for the rail", sharedStore["gitlab-mr.badge"], { n: 4, err: false, ready: true });
 
-// --- the dock ---
-const d = new Dock();
+// --- the rail ---
+const d = new Rail();
 d.init({}, cx);
 runs = []; globalThis.__runs = runs;
-eq("dock: not showing while hidden", d.showing("gitlab-mr"), false);
+eq("rail: not showing while hidden", d.showing("gitlab-mr"), false);
 d.click(cx, { child: "gitlab-mr" });
-eq("dock: select then show, in that order", runs.map((r) => r[0]), ["layout.select", "layout.show"]);
-eq("dock: the layout now says shown", d.showing("gitlab-mr"), true);
+eq("rail: select then show, in that order", runs.map((r) => r[0]), ["layout.select", "layout.show"]);
+eq("rail: the layout now says shown", d.showing("gitlab-mr"), true);
 
 // the panel notices it came back and asks again at once, clock be damned
 reset();
@@ -164,15 +164,15 @@ p.tick(cx);
 await settle();
 eq("shown again: asks even when not due", calls.filter((c) => c.cmd === "glab").length, 1);
 
-// --- closing, by the dock or by anything else ---
+// --- closing, by the rail or by anything else ---
 runs = []; globalThis.__runs = runs;
 d.click(cx, { child: "gitlab-mr" });
-eq("dock: clicking the showing icon hides the column", runs, [["layout.hide", { id: "sidepanel" }]]);
-eq("dock: no longer showing", d.showing("gitlab-mr"), false);
+eq("rail: clicking the showing icon hides the column", runs, [["layout.hide", { id: "sidepanel" }]]);
+eq("rail: no longer showing", d.showing("gitlab-mr"), false);
 stack().hidden = false; stack().active = "gitlab-mr";
-eq("dock: follows a change it did not make", d.showing("gitlab-mr"), true);
+eq("rail: follows a change it did not make", d.showing("gitlab-mr"), true);
 stack().active = "history";
-eq("dock: another child showing is not this one", d.showing("gitlab-mr"), false);
+eq("rail: another child showing is not this one", d.showing("gitlab-mr"), false);
 stack().hidden = true; stack().active = "gitlab-mr";
 
 // --- a panel with no layout to ask about (check, or a block on its own) ---

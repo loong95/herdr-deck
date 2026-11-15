@@ -194,10 +194,10 @@
               ]
             },
             {
-              "id": "dock",
+              "id": "rail",
               "type": "block",
               "content": {
-                "mod": "dock"
+                "mod": "rail"
               },
               "size": {
                 "px": 44

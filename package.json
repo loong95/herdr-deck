@@ -1,0 +1,9 @@
+{
+  "name": "herdr-deck",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Herdr layout: a workspace shell, a rail of panels, and a native GUI for Pi (and, next, other agents).",
+  "scripts": {
+    "test": "node test/rail.test.mjs && node test/mr-review.test.mjs && node test/pi-sessions.test.mjs && node --test extensions/pi-gui-bridge/rows.test.mjs"
+  }
+}

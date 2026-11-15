@@ -54,7 +54,7 @@ once the panel is zoomed away; `mod.open` is the one that always works.
 
 There is also a clickable entry: right-click a Pi terminal →
 **Pi panel** (`mods/menu-pi`, a clone of Herdr's `menu` with one row added, wired
-by `"terminal_menu": "menu-pi"` in `layouts/main-mr.json`). Its hint shows
+by `"terminal_menu": "menu-pi"` in `layouts/deck.json`). Its hint shows
 `ctrl-alt-p`, and it opens the same copy — with two differences that come from
 being a click rather than a key:
 

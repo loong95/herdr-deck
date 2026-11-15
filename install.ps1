@@ -2,8 +2,9 @@
 #
 #   ./install.ps1                     copy into place here
 #   ./install.ps1 -Link               junction instead (edit here, Herdr reloads live)
-#   ./install.ps1 -Remote 10.0.0.5    put the bridge on another Herdr machine
-param([switch]$Link, [string]$Remote)
+#   ./install.ps1 -Link -Replace      swap an older plain copy for the junction
+#   ./install.ps1 -Remote 10.0.0.5    put the Pi bridge on another Herdr machine
+param([switch]$Link, [switch]$Replace, [string]$Remote)
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -20,7 +21,7 @@ if ($Remote) {
     $from = Join-Path $bridge $f
     if (-not (Test-Path $from)) { continue }
     Get-Content -Raw -LiteralPath $from | hc file write --on $Remote "$dest/$f" | Out-Null
-    Write-Host "wrote ${Remote}:$dest/$f"
+    Write-Host ("wrote " + $Remote + ":" + $dest + "/" + $f)
   }
   Write-Host "npm install on $Remote (mermaid, jsdom, puppeteer-core)…"
   hc exec --on $Remote "cd '$dest' && npm install --no-audit --no-fund" | Select-Object -Last 3
@@ -31,10 +32,14 @@ if ($Remote) {
   exit 0
 }
 
-# --- this machine
+# --- the mods and the Pi extension: folders, so a junction can stand in for a copy
 $targets = @(
-  @{ name = "mods/pi-gui";             live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/pi-gui" },
-  @{ name = "mods/menu-pi";            live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/menu-pi" },
+  @{ name = "mods/rail";                live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/rail" },
+  @{ name = "mods/gitlab-mr";           live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/gitlab-mr" },
+  @{ name = "mods/mr-review";           live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/mr-review" },
+  @{ name = "mods/pi-sessions";         live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/pi-sessions" },
+  @{ name = "mods/pi-gui";              live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/pi-gui" },
+  @{ name = "mods/menu-pi";             live = Join-Path $env:USERPROFILE ".config/herdr-app/mods/menu-pi" },
   @{ name = "extensions/pi-gui-bridge"; live = Join-Path $env:USERPROFILE ".pi/agent/extensions/pi-gui-bridge" }
 )
 
@@ -48,7 +53,11 @@ foreach ($t in $targets) {
         if ($item.Target -eq $source) { Write-Host "already linked: $live"; continue }
         throw "$live is a junction to $($item.Target); remove it first"
       }
-      throw "$live exists and is not a junction; remove it first (it holds the live copy)"
+      if (-not $Replace) {
+        throw "$live exists and is not a junction; it holds the live copy (rerun with -Replace to drop it and link instead)"
+      }
+      Remove-Item $live -Recurse -Force
+      Write-Host "removed the plain copy at $live"
     }
     New-Item -ItemType Junction -Path $live -Target $source | Out-Null
     Write-Host "linked $live -> $source"
@@ -59,17 +68,42 @@ foreach ($t in $targets) {
   }
 }
 
+# --- the layout: one file, and the folder it lands in holds other layouts too, so it
+# is linked file by file instead of the whole folder. A hard link needs no admin
+# rights and reads as an ordinary file to Herdr.
+$layoutSource = Join-Path $repo "layouts/deck.json"
+$layoutLive = Join-Path $env:USERPROFILE ".config/herdr-app/layouts/deck.json"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $layoutLive) | Out-Null
+if ($Link) {
+  $already = (Test-Path $layoutLive) -and ((Get-Item $layoutLive -Force).LinkType -eq "HardLink")
+  if ($already) { Write-Host "already linked: $layoutLive" }
+  else {
+    if (Test-Path $layoutLive) {
+      if (-not $Replace) { throw "$layoutLive exists; rerun with -Replace to overwrite it" }
+      Remove-Item $layoutLive -Force
+    }
+    New-Item -ItemType HardLink -Path $layoutLive -Target $layoutSource | Out-Null
+    Write-Host "linked $layoutLive -> $layoutSource"
+  }
+} else {
+  Copy-Item $layoutSource $layoutLive -Force
+  Write-Host "copied $layoutSource -> $layoutLive"
+}
+
 Push-Location $bridge
 if (-not (Test-Path "node_modules")) { npm install --no-audit --no-fund }
 Pop-Location
 
 Write-Host ""
-Write-Host "Two files outside this repo still have to know about it:"
-Write-Host '  ~/.config/herdr-app/keys.json      "ctrl-alt-p": "mod.open:pi-gui"'
-Write-Host '  ~/.config/herdr-app/layouts/*.json "terminal_menu": "menu-pi"'
+Write-Host "One file outside this repo still has to know about it:"
+Write-Host '  ~/.config/herdr-app/keys.json   "ctrl-alt-p": "mod.open:pi-gui"'
 Write-Host ""
 Write-Host "Then: restart the Pi in the terminal (extensions load at start),"
 Write-Host "      press ctrl-alt-p, or right-click a Pi terminal -> Pi panel."
+Write-Host "      ctrl-shift-l switches layouts: 'deck' is the one this repo owns."
+Write-Host ""
+Write-Host "An older copy of the layout may still sit in that folder as main-mr.json;"
+Write-Host "it is not ours to delete, but switching to 'deck' once is enough to retire it."
 Write-Host ""
 Write-Host "A Pi on another Herdr machine needs its bridge there too:"
 Write-Host "  ./install.ps1 -Remote <machine>      (then restart Pi on that machine)"

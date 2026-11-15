@@ -1,6 +1,7 @@
 node_modules/
 .cache/
 *.log
+mods/pi-gui-cache/
 
 # Herdr writes these into every mod folder on start (they are live folders now,
 # because install.ps1 -Link points them here).

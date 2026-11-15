@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { CAPABILITIES, shaped } from "./protocol.ts";
 import { buildRows, splitMermaid } from "./rows.ts";
 import { browserPath, cacheDir, closeBrowser, hashOf, imagePathFor, renderDiagram } from "./diagrams.ts";
 
@@ -366,8 +367,16 @@ function snapshot(windowSize) {
   };
 }
 
+// The word an error carries on top of its sentence: the panel can act on a code, and only
+// shows a message. Derived from the status here, so every route says one without repeating it.
+const CODE_OF = { 400: "bad-request", 403: "forbidden", 404: "not-found", 409: "busy", 500: "failed" };
+
 function json(res, code, body) {
-  const text = JSON.stringify(body);
+  let out = body;
+  if (out && typeof out === "object" && !Array.isArray(out) && typeof out.error === "string" && !out.code) {
+    out = { ...out, code: CODE_OF[code] ?? "error" };
+  }
+  const text = JSON.stringify(shaped(out));
   res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(text) });
   res.end(text);
 }
@@ -400,7 +409,7 @@ function handler(pi) {
         });
       }
       if (since === version) { res.writeHead(204); return res.end(); }
-      return json(res, 200, { version, state: snapshot(url.searchParams.get("rows")) });
+      return json(res, 200, { version, capabilities: CAPABILITIES, state: snapshot(url.searchParams.get("rows")) });
     }
 
     // Older rows, on demand: the panel starts at the newest screenful.
@@ -414,7 +423,7 @@ function handler(pi) {
 
     if (req.method === "GET" && url.pathname === "/meta") {
       flush();
-      return json(res, 200, meta(pi, lastCtx));
+      return json(res, 200, { ...meta(pi, lastCtx), capabilities: CAPABILITIES });
     }
 
     if (req.method === "GET" && url.pathname === "/sessions") {

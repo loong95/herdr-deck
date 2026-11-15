@@ -8,6 +8,12 @@
 // A bridge on this machine or another one: the header says which.
 import { View, div, image } from "gpui-kit";
 import { markdownView } from "./mdblocks.js";
+
+// The bridge speaks a protocol and lists what it can be asked for
+// (extensions/pi-gui-bridge/protocol.ts). It is installed separately — sometimes on another
+// machine — so a version apart is said out loud instead of guessed at, and a capability this
+// bridge does not have is not offered.
+const WIRE = 1;
 import { v_flex, h_flex, TextView, InputState, Input, ScrollHandle } from "gpui-base";
 import { theme, props, appHome, readTextFile, watchFolder, home, settings, focused, panes, nextCommand, run, closeOverlay, exec, shared, setShared } from "herdr";
 import { Buffer } from "buffer";
@@ -546,6 +552,8 @@ export default class PiGui extends View {
     this.picker = null;          // {kind: "model"|"thinking"|"command"|"file"|"session", filter}
     this.fileItems = [];
     this.sessions = [];
+    this.wire = null;            // the protocol the bridge answered with
+    this.caps = null;            // what it says it can do (a Set once one answer said so)
     this.error = null;
     this.sending = false;
     this.watching = false;
@@ -688,9 +696,30 @@ export default class PiGui extends View {
   }
 
   /** One request to this panel's bridge, wherever it runs. */
-  call(bridge, path, options) {
+  async call(bridge, path, options) {
     const url = "http://127.0.0.1:" + bridge.port + path + (path.includes("?") ? "&" : "?") + "t=" + bridge.token;
-    return bridgeCall(bridge.machine || null, url, options || {});
+    const reply = await bridgeCall(bridge.machine || null, url, options || {});
+    this.noteWire(reply);
+    return reply;
+  }
+
+  /** What every answer tells us about the bridge behind it. */
+  noteWire(reply) {
+    const body = reply && reply.body;
+    if (!body || typeof body !== "object") return;
+    if (typeof body.protocol === "number" && body.protocol !== this.wire) {
+      this.wire = body.protocol;
+      if (body.protocol !== WIRE) {
+        this.error = "The Pi bridge speaks protocol " + body.protocol + "; this panel speaks " + WIRE +
+          ". Install both from one version.";
+      }
+    }
+    if (Array.isArray(body.capabilities)) this.caps = new Set(body.capabilities);
+  }
+
+  /** Whether this bridge offers something. Unknown (no answer yet) counts as offered. */
+  can(what) {
+    return !this.caps || this.caps.has(what);
   }
 
   /**
@@ -1107,6 +1136,12 @@ export default class PiGui extends View {
 
   openPicker(kind, cx) {
     if (!this.bridge) return;
+    // An older bridge cannot list sessions; say so instead of opening an empty list.
+    if (kind === "session" && !this.can("sessions")) {
+      this.error = "This Pi bridge cannot list sessions. Install the bridge from the same version as the panel.";
+      cx.notify();
+      return;
+    }
     this.picker = { kind, filter: "", driven: false };
     this.fileItems = [];
     this.sessions = [];

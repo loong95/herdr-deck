@@ -186,6 +186,11 @@ Four harnesses, and none of them needs Herdr:
 | `test/rail.test.mjs` | the rail and the MR panel against one fake layout document, so what is checked is the protocol between them: who is showing, badges, hide and show |
 | `test/mr-review.test.mjs` | what the review asks `glab` for, the file list it builds, what a confirmed dialog finally runs — no GitLab is ever touched |
 | `test/pi-sessions.test.mjs` | a real temp sessions tree, and mostly call counts, because the point of the panel is what it does *not* read |
+| `test/board.test.mjs` | the board's names, groups and counts, and the rail rows that open it |
+| `test/blocks.test.mjs` | the markdown splitter pi-gui draws code boxes and tables from (pure: bare node) |
+| `test/mdblocks.test.mjs` | the code boxes and tables themselves, walked as an element tree |
+| `test/pi-gui-wire.test.mjs` | the panel's half of the bridge protocol: a version apart is said, a missing capability is not offered |
+| `extensions/pi-gui-bridge/protocol.test.mjs` | the bridge's half: what every answer carries |
 | `test/imports.test.mjs` | every mod loads, and its manifest has a place |
 | `test/skeleton.test.mjs` | the layout, the mods, the rail's rows and `install.ps1` still agree with each other |
 | `extensions/pi-gui-bridge/rows.test.mjs` | the display model only: row building, tool summaries, mermaid fence extraction |
@@ -227,6 +232,13 @@ Pi terminal ── pi-gui-bridge (extension) ── HTTP 127.0.0.1:<port> ──
 deck.json ── sidepanel stack ── gitlab-mr / pi-sessions ── glab, fs
           └─ rail ── layout() + run("layout.show|hide|select") + shared badges
 ```
+
+The bridge answers a `protocol` number and a `capabilities` list on every reply, and
+an error carries a `code` beside its sentence (extensions/pi-gui-bridge/protocol.ts).
+The panel speaks 1: another number is a sentence on screen instead of a field whose meaning was
+guessed, and a capability the bridge does not list (an older bridge, say) is not offered. That
+matters because the two ends are installed apart — the panel here, the bridge where Pi runs,
+sometimes on another machine.
 
 Design notes worth keeping:
 

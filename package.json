@@ -5,6 +5,6 @@
   "type": "module",
   "description": "A Herdr layout: a workspace shell, a rail of panels, and a native GUI for Pi (and, next, other agents).",
   "scripts": {
-    "test": "node --import ./test/stub/register.mjs --test \"test/*.test.mjs\" && node --test extensions/pi-gui-bridge/rows.test.mjs"
+    "test": "node --import ./test/stub/register.mjs --test \"test/*.test.mjs\" && node --test \"extensions/pi-gui-bridge/*.test.mjs\""
   }
 }

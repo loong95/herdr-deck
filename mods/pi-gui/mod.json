@@ -1,1 +1,10 @@
-{ "place": "none", "title": "Pi", "focusable": true }
+{
+  "place": "none",
+  "title": "Pi",
+  "focusable": true,
+  "capabilities": {
+    "fs": {
+      "write": ["../pi-gui-cache"]
+    }
+  }
+}

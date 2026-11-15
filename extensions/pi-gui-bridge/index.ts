@@ -8,6 +8,8 @@
 //   GET  /meta?t=<token>                              model, thinking levels, models, commands
 //   GET  /files?t=<token>&q=<text>                    @-mention candidates in cwd
 //   GET  /sessions?t=<token>                          sessions of this folder
+//   GET  /diagram?t=<token>&hash=<hash>               a rendered mermaid PNG, for
+//                                                     a panel on another machine
 //   POST /prompt?t=<token>   {"message": "..."}       a real user message
 //   POST /model?t=<token>    {"provider": "…", "id": "…"}
 //   POST /thinking?t=<token> {"level": "high"}
@@ -417,6 +419,19 @@ function handler(pi) {
 
     if (req.method === "GET" && url.pathname === "/sessions") {
       return json(res, 200, { sessions: await sessionList(lastCtx) });
+    }
+
+    // A panel on another machine cannot draw a PNG that lives here, and the
+    // panel's HTTP cannot reach 127.0.0.1 of this machine either: so it asks for
+    // the bytes over the same channel it already uses.
+    if (req.method === "GET" && url.pathname === "/diagram") {
+      const hash = String(url.searchParams.get("hash") || "").replace(/[^0-9a-f]/g, "");
+      if (!hash) return json(res, 400, { error: "missing hash" });
+      let png = null;
+      try { png = await readFile(join(cacheDir(APP_HOME), hash + ".png")); } catch {}
+      if (!png) return json(res, 404, { error: "no such diagram" });
+      res.writeHead(200, { "content-type": "image/png", "content-length": png.length });
+      return res.end(png);
     }
 
     if (req.method === "GET" && url.pathname === "/files") {

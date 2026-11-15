@@ -1,7 +1,8 @@
 # pi-gui — a native GUI for Pi inside Herdr
 
 Herdr mods draw native GPUI: no webview, no HTML. So the GUI is a real Herdr
-panel that talks to Pi over localhost HTTP.
+panel that talks to Pi over localhost HTTP — on this machine, or through
+herdr-core on another one.
 
 ## Pieces
 
@@ -28,6 +29,10 @@ herdr-app do tab.new '{"mod":"pi-gui","props":{"cwd":"D:/Projects/api"}}'
 # or the terminal alone, or opens the panel if this tab has none yet.
 # open with a picker already up: "model" | "thinking" | "command" | "file" | "session"
 herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"t7","open":"model"}}'
+# a Pi on another Herdr machine: same panel, machine-qualified terminal
+herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"10.0.0.5/t7"}}'
+# …or by machine and folder, with no terminal named
+herdr-app do tab.new '{"mod":"pi-gui","props":{"machine":"10.0.0.5","cwd":"/srv/api"}}'
 # …or with the composer already holding text
 herdr-app do pane.split '{"direction":"right","mod":"pi-gui","props":{"terminal":"t7","seed":"/co"}}'
 ```
@@ -49,9 +54,21 @@ once the panel is zoomed away; `mod.open` is the one that always works.
 
 There is also a clickable entry: right-click a Pi terminal →
 **Pi panel** (`mods/menu-pi`, a clone of Herdr's `menu` with one row added, wired
-by `"terminal_menu": "menu-pi"` in `layouts/main-mr.json`). The row runs
-`mod.open {name: "pi-gui"}`, so it is the same switch, and its hint shows
-`ctrl-alt-p`. Shift+right-click reaches it even when the program owns the mouse.
+by `"terminal_menu": "menu-pi"` in `layouts/main-mr.json`). Its hint shows
+`ctrl-alt-p`, and it opens the same copy — with two differences that come from
+being a click rather than a key:
+
+- **it shows the panel, it never swaps.** A key press is a toggle ("show what is
+  not showing"); a right-click on a terminal means "the panel for this one", so
+  the panel is split in beside it — or the tab's existing panel comes forward —
+  and stays in front.
+- **the clicked terminal is carried, not guessed.** `mod.open` takes no props and
+  a right-click does not have to move the keyboard focus, so the row leaves
+  `{terminal, pane, cwd}` in `shared("pi-gui.target")` and the panel reads it once
+  (15 s, then it is stale). That is what makes the entry work for a Pi on another
+  machine while the focus sits in a local tab.
+
+Shift+right-click reaches it even when the program owns the mouse.
 
 `ctrl-alt-p` is one key and one visible thing: the key runs `mod.open:pi-gui`,
 which starts a copy as an overlay; that copy reads live data and turns itself
@@ -77,9 +94,14 @@ started or restarted later binds by itself. When nothing answers it says so with
 numbers: "No live Pi bridge — 3 registrations, 1 for this tab or folder, 0
 answering".
 
-Binding order: `props().terminal` > the Pi in the tab you are looking at
-(`info.tab` vs `focused().tab`) > same folder > read-only JSONL fallback. Every
+Binding order: `props().terminal` > the Pi in the panel's own tab
+(`info.tab` vs `props().pane`'s tab, else `focused().tab`) > same folder >
+read-only JSONL fallback. A name beats a guess: a panel split in beside another
+terminal binds to the terminal it was opened for even before it has the keyboard,
+and its own tab is used instead of the focused one for the same reason. Every
 candidate is probed first, so a registration left by a force-killed Pi is skipped.
+On another machine both sides are compared without their `machine/` prefix: the
+bridge names its terminal, tab and space as its own machine does.
 
 `mod.json` sets `"focusable": true`, so `pane.go` hands the panel the keyboard;
 it focuses its own composer on open and on click.
@@ -149,6 +171,8 @@ GET  /sessions?t=<token>                          sessions of this folder, newes
 POST /prompt?t=<token>   {"message":"...","images":[{"data":"<base64>","mimeType":"image/png"}]}
                                                   real user message (steer when busy)
 GET  /rows?t=<token>&before=<index>&count=<n>    one page of older rows
+GET  /diagram?t=<token>&hash=<hash>               a rendered mermaid PNG, for a
+                                                  panel on another machine
 POST /model?t=<token>    {"provider":"…","id":"…"}
 POST /thinking?t=<token> {"level":"high"}
 POST /sessions/switch?t=<token> {"id":"…"}        refuses while Pi is busy
@@ -196,16 +220,59 @@ With no live bridge (Pi not running, or an old Pi), the panel falls back to
 Pi's session JSONL — `~/.pi/agent/sessions/--<cwd>--/*.jsonl`, watched with
 `watchFolder` — and renders the active branch read-only.
 
-## Known limits
+## Pi on another machine
 
-- Local machine only. A Pi on another machine needs its own bridge plus a
-  tunnel (`hc exec --on vps`) to reach its port from here.
+A Pi on any Herdr machine (`hc machine ls`) gets the same panel. The only extra
+step is once per machine: the bridge is a Pi extension, so it has to be installed
+where Pi runs, and Pi restarted there.
+
+```powershell
+./install.ps1 -Remote 10.0.0.5
+```
+
+Where this panel looks is decided per panel, in this order:
+
+| Given | Machine |
+|---|---|
+| `props.machine` | exactly that |
+| `props.terminal` = `"10.0.0.5/t7"` | the machine in the address |
+| its own tab (a panel inside a remote space) | that tab's machine |
+| nothing of the above | this computer |
+
+It then reads that machine's `~/.pi/agent/gui/` (`exec {on}` + `readTextFile {on}`)
+and speaks HTTP to the bridge found there with one `curl` per request, run on that
+machine through herdr-core. So nothing is exposed: the bridge still listens on
+127.0.0.1, and there is no tunnel to hold open.
+
+What that costs, and how the awkward parts are handled:
+
+- **Round trips.** A long poll (`wait=25`) is one process there per 25 s; each
+  send, model change or file search is one round trip (~0.2–0.5 s). The panel
+  shows the same "working" as always while it waits.
+- **Big bodies.** Windows caps a command line at 32 kB and an image is megabytes,
+  so a body over ~20 kB is written here and piped to the other machine with
+  `hc file write` (stdin, no limit); `curl` posts it from that file.
+- **Diagrams.** Mermaid is rendered where Pi runs (headless Chrome there). The
+  panel asks `/diagram` for the PNG once, keeps it in
+  `~/.config/herdr-app/mods/pi-gui-cache/mermaid/` and draws that. Without a
+  browser on that machine the row says so instead.
+- **Watching.** A folder on another machine cannot be watched, so the read-only
+  fallback re-reads it every 3 s instead of on change.
+- **Writing.** A mod writes only where `mod.json` grants it
+  (`capabilities.fs.write`), and a linked mod folder resolves to its real path,
+  which no grant matches — so the cache lives in the sibling folder
+  `mods/pi-gui-cache`, named `../pi-gui-cache` in the manifest.
+
+## Known limits
 - Image paste uses PowerShell's clipboard (Windows) or `pngpaste` (macOS, if
   installed). Linux has no command wired yet; there the paste reports
   "Clipboard holds no image" plus the attempts it made. Typing `@path` to an
   image file still works everywhere.
 - The transcript shows the active branch, newest 400 rows; the session file keeps
   all of it.
+- A remote panel is slower to answer than a local one (one round trip per action),
+  and it needs that machine's core reachable: when it is not, the header says
+  which machine and the last error says why.
 - A space named after its folder turns into `~` when the Pi inside it runs with
   the home folder as its *process* cwd (Pi started in `~` and continuing a session
   elsewhere): Herdr names unnamed spaces after their first terminal's live folder.

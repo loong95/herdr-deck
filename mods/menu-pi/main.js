@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";
+import { run, props, closeOverlay, openOverlay, setShared, theme, keys, terminals, spaces, panes, exec } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -46,7 +46,9 @@ function items(p, git) {
               ["Zoom", "pane.zoom", { pane: tg.pane }],
             ]
           : []),
-        ...(isPi ? [["Pi panel", "mod.open", { name: "pi-gui" }]] : []),
+        // "pi-gui" is handled here, not by a command: mod.open takes no props, and
+        // the pane clicked is not always the focused one.
+        ...(isPi ? [["Pi panel", "pi-gui", { terminal: tg.terminal || null, pane: tg.pane || null }]] : []),
         ...(term
           ? [
               toProgram
@@ -84,7 +86,7 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
-  if (command === "mod.open") return "mods/workspace-chrome/panel-right.svg";
+  if (command === "mod.open" || command === "pi-gui") return "mods/workspace-chrome/panel-right.svg";
   const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
@@ -93,7 +95,8 @@ function menuIcon(command) {
 function shortcut(name, args) {
   // `pane.split:right` binds pane.split with { direction: "right" }.
   const value = args && Object.values(args)[0];
-  const k = keys().find((b) => b.section === "global" && (b.action === name || b.action === `${name}:${value}`));
+  const action = name === "pi-gui" ? "mod.open" : name;                 // the panel opens through mod.open
+  const k = keys().find((b) => b.section === "global" && (b.action === action || b.action === `${action}:${value}`));
   return k ? k.keys : "";
 }
 
@@ -117,6 +120,20 @@ export default class Menu extends View {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
+    if (it[1] === "pi-gui") {
+      // The panel is opened with mod.open (which takes no props) and it looks at
+      // the tab it is in: hand it the pane that was clicked, since a right-click
+      // does not have to move the focus.
+      const clicked = panes().find((p) => p.pane === it[2].pane) || null;
+      setShared("pi-gui.target", {
+        terminal: (clicked && clicked.terminal) || it[2].terminal,
+        pane: it[2].pane,
+        cwd: (clicked && clicked.cwd) || null,
+        at: Date.now(),
+      });
+      run("mod.open", { name: "pi-gui" });
+      return;
+    }
     if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }

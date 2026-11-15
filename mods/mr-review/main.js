@@ -49,12 +49,12 @@ const STATUS = {
 // Things GitLab will not merge no matter what it says it is thinking about.
 const BLOCKED = ["conflict", "draft_status", "ci_stopped", "not_open"];
 
-const enc = (path) => String(path).split("/").map(encodeURIComponent).join("%2F");
+export const enc = (path) => String(path).split("/").map(encodeURIComponent).join("%2F");
 
 // glab wraps failures in a padded box and prefixes `glab: `, and an API error arrives
 // as a bare `{"message":"404 Project Not Found"}glab: HTTP 404 (HTTP 404)`. What is
 // left after dropping the frame, the prefix and the repeated code is the reason.
-function say(e) {
+export function say(e) {
   const text = String(typeof e === "string" ? e : e?.message ?? e);
   const api = text.match(/^\s*\{"message":"(.+?)"\}/);
   if (api) return api[1];
@@ -81,7 +81,7 @@ const lum = (c) => {
   const [r, g, b] = [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16) || 0);
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
-const tint = (t) => (lum(t.background) < lum(t.foreground) ? "3a" : "18");
+export const tint = (t) => (lum(t.background) < lum(t.foreground) ? "3a" : "18");
 
 // Text draws a tab as nothing: pad each to the next 4-column stop.
 const untab = (text) => text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd((s.length - 1) - (s.length - 1) % 4 + 4));
@@ -103,7 +103,7 @@ function diffRows(lines) {
 // Side by side: a run of removed lines is read against the added run after it, so each
 // pair shares a row and whichever side ran out stays blank. Line numbers only advance
 // where a line really is.
-function splitRows(lines) {
+export function splitRows(lines) {
   let old = 0, next = 0;
   const out = [];
   const cell = (kind, number, text) => ({ kind, number, text });
@@ -135,7 +135,7 @@ function splitRows(lines) {
 
 // The files as a tree. A folder that holds nothing but one other folder is folded into
 // its child's name: src/main/java is three rows of nothing to read otherwise.
-function treeRows(files, folded) {
+export function treeRows(files, folded) {
   const node = (name) => ({ name, dirs: new Map(), files: [] });
   const root = node("");
   for (const f of files) {
@@ -169,7 +169,7 @@ function treeRows(files, folded) {
 
 // GitLab hands the description back as markdown and there is no text engine here, so
 // this reads the line starts a review actually needs and drops the markup inside a line.
-function mdLines(text) {
+export function mdLines(text) {
   const inline = (s) => s
     .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, (_a, one, two) => (one ? `${one} ${two}` : two))
     .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1")
@@ -200,7 +200,7 @@ const countKind = (diff, sign) => diff.split("\n").filter((l) => l.startsWith(si
 
 // What the API gives per file, in the shape the panel draws. A file whose diff GitLab
 // folded away has to be asked for out of the whole patch instead.
-function fileOf(d, i) {
+export function fileOf(d, i) {
   const diff = String(d.diff ?? "");
   const folded = Boolean(d.collapsed || d.too_large);
   const status = d.deleted_file ? "D" : d.new_file ? "A" : d.renamed_file ? "R"
@@ -217,7 +217,7 @@ function fileOf(d, i) {
 }
 
 // git quotes a path it will not print raw as the UTF-8 bytes of the name, in octal.
-function unquote(raw) {
+export function unquote(raw) {
   const t = String(raw).trim().replace(/^"|"$/g, "");
   if (!t.includes("\\")) return t;
   const bytes = [];
@@ -253,7 +253,7 @@ function patchPath(lines) {
 }
 
 // The whole patch, cut into per-file bodies keyed the way the file list is keyed.
-function chunks(text) {
+export function chunks(text) {
   const out = new Map();
   for (const part of String(text).split(/^diff --git /m).slice(1)) {
     const lines = part.split("\n");

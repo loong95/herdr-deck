@@ -50,14 +50,14 @@ const STATUS = {
 };
 
 // `group/sub/repo!3` -> `group/sub/repo`, what glab wants after -R.
-function projectOf(m) {
+export function projectOf(m) {
   const full = m.references?.full ?? "";
   const at = full.lastIndexOf("!");
   return at > 0 ? full.slice(0, at) : "";
 }
 
 // `git@host:group/repo.git`, `https://host/group/repo.git`, `ssh://git@host:22/group/repo`.
-function pathOfRemote(url) {
+export function pathOfRemote(url) {
   const t = String(url ?? "").trim().replace(/\.git\/?$/, "");
   const scp = t.match(/^[^@/\s]+@[^:\s]+:(.+)$/);
   if (scp) return scp[1];
@@ -82,7 +82,7 @@ function elsewhere(host) {
   return !host || ELSEWHERE.some((h) => host === h || host.endsWith("." + h));
 }
 
-function ago(ms) {
+export function ago(ms) {
   if (!ms) return "";
   const s = Math.max(0, (Date.now() - ms) / 1000);
   if (s < 90) return "now";
@@ -95,7 +95,7 @@ function ago(ms) {
 // glab wraps failures in a padded box and prefixes `glab: `, and an API error arrives
 // as a bare `{"message":"404 Project Not Found"}glab: HTTP 404 (HTTP 404)`. What is
 // left after dropping the frame, the prefix and the repeated code is the reason.
-function say(e) {
+export function say(e) {
   const text = String(typeof e === "string" ? e : e?.message ?? e);
   const api = text.match(/^\s*\{"message":"(.+?)"\}/);
   if (api) return api[1];

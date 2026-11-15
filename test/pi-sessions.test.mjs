@@ -5,6 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fake, log } from "./stub/herdr.mjs";
+import PiSessions, { slugOf, ofFile, digest, oneLine, ago, shortModel } from "../mods/pi-sessions/main.js";
 
 // The bundle this test sits in, so it checks the source next to it rather than whatever
 // the running app happens to have loaded. MODS_HOME points it at a live home instead.
@@ -64,38 +66,6 @@ fs.writeFileSync(path.join(SESS, OTHER_DIR, fileOf(3, "other-3333-4444-5555-6666
 fs.writeFileSync(path.join(SESS, CASE_DIR, fileOf(4, "casey-4444-5555-6666-777788889999")), session(4, "casey", { name: "case insensitive", cwd: CASEY }));
 
 // --- the fake host ---
-const STUBS = `
-const View = class {};
-const el = () => new Proxy({}, { get: (t, k) => (k === "then" ? undefined : () => el()), set: () => true });
-const div = el, h_flex = el, v_flex = el;
-const join = (...parts) => globalThis.__fs.join(...parts);
-const readdir = (dir, opts) => globalThis.__fs.readdir(dir, opts);
-const readFile = (file) => globalThis.__fs.readFile(file);
-const exec = (cmd, args, opts) => globalThis.__exec(cmd, args, opts);
-const readTextFile = (file, opts) => globalThis.__readTextFile(file, opts);
-const home = () => globalThis.__home;
-const props = () => globalThis.__props || {};
-const layout = () => globalThis.__tree;
-const spaces = () => globalThis.__spaces;
-const panes = () => globalThis.__panes;
-const run = (name, args) => { globalThis.__runs.push([name, args]); return null; };
-const theme = () => ({
-  chrome: "#000", border: "#111", surface: "#222", foreground: "#eee", muted: "#888", dim: "#666",
-  raised: "#333", hover: "#444", selected: "#555", solid: "#666", solid_foreground: "#fff",
-  done: "#0f0", blocked: "#f00", working: "#ff0", unknown: "#999",
-});
-`;
-
-let n = 0;
-async function loadMod(file, names) {
-  let src = fs.readFileSync(file, "utf8").replace(/^import .*$/gm, "").replace("export default class", "class");
-  src += "\nglobalThis.__X = { " + names.join(", ") + " };\n";
-  const tmp = SCRATCH + "/harness-" + n++ + ".mjs";
-  fs.writeFileSync(tmp, STUBS + src);
-  await import("file:///" + tmp.replace(/\\/g, "/"));
-  return globalThis.__X;
-}
-
 let readdirs = [];
 let reads = [];
 let readDelay = 0; // ms per read, so a test can put the panel away mid-page
@@ -130,9 +100,6 @@ globalThis.__runs = [];
 globalThis.__spaces = [{ id: "s1", name: "demo", folder: DEMO, machine: null, active: true, tabs: [{ id: "tb1" }] }];
 globalThis.__panes = [{ tab: "tb1", pane: "p1", cwd: DEMO, focused: true }];
 
-const { PiSessions, slugOf, ofFile, digest, oneLine, ago, shortModel } = await loadMod(MOD, [
-  "PiSessions", "slugOf", "ofFile", "digest", "oneLine", "ago", "shortModel",
-]);
 
 let fails = 0;
 const eq = (label, got, want) => {

@@ -1,50 +1,21 @@
 // Drives the review tab outside Herdr: what it asks glab for, what it puts in the file
 // list, and what a confirmed dialog finally runs. Nothing here talks to GitLab, so no MR
 // is ever merged or closed by this test.
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+//
+// The modules the mod imports come from test/stub/ (see stub/register.mjs): this is the real
+// source, imported as it is.
+import { fake, log } from "./stub/herdr.mjs";
+import MrReview, { enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines } from "../mods/mr-review/main.js";
 
-const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const HOME = process.env.MODS_HOME ?? ROOT;
-const MOD = `${HOME}/mods/mr-review/main.js`;
-const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-mod-harness-"));
-
-const STUBS = `
-const View = class {};
-const el = () => new Proxy({}, { get: (t, k) => (k === "then" ? undefined : () => el()), set: () => true });
-const div = el, h_flex = el, v_flex = el, svg = () => el();
-const v_virtual_list = el, Input = el, InputState = { new: () => ({}) };
-const Scrollbar = { vertical: () => el() };
-globalThis.localStorage = { getItem: (k) => globalThis.__ls[k] ?? null, setItem: (k, v) => { globalThis.__ls[k] = v; } };
-const exec = async (cmd, args, opts) => { globalThis.__calls.push({ cmd, args, opts }); return globalThis.__reply(cmd, args, opts); };
-const run = (name, args) => { globalThis.__runs.push([name, args]); return null; };
-const openOverlay = (spec) => { globalThis.__overlays.push(spec); return "o1"; };
-const closeOverlay = () => null;
-const shared = (k) => globalThis.__shared[k];
-const setShared = (k, v) => { globalThis.__shared[k] = v; };
-const props = () => globalThis.__props ?? {};
-const settings = () => ({});
-const theme = () => ({ background: "#000", chrome: "#000", border: "#111", foreground: "#eee", muted: "#888", dim: "#666", raised: "#222", hover: "#333", selected: "#444", solid: "#555", solid_foreground: "#fff", accent: "#7af", blocked: "#f00", done: "#0f0", working: "#ff0", ansi1: "#f55", ansi2: "#5f5" });
-// A broadcast: every copy of the mod wakes up on the command, whichever one the app
-// would really have picked, so the copies have to sort among themselves who acts.
-const __waiters = [];
-const nextCommand = () => new Promise((res) => { __waiters.push(res); });
-globalThis.__send = (c) => __waiters.splice(0, __waiters.length).forEach((res) => res(c));
-globalThis.__only = () => { __waiters.length = 0; };
+// The app hands a command to every copy of a mod, whichever one it would really have picked,
+// so the copies have to sort among themselves who acts. __send delivers one; __only drops the
+// ones still waiting.
+const waiters = [];
+globalThis.__nextCommand = () => new Promise((res) => { waiters.push(res); });
+globalThis.__send = (c) => waiters.splice(0, waiters.length).forEach((res) => res(c));
+globalThis.__only = () => { waiters.length = 0; };
 globalThis.__ls = {};
-`;
-
-let n = 0;
-async function loadMod(file, names) {
-  let src = fs.readFileSync(file, "utf8").replace(/^import .*$/gm, "").replace("export default class", "class");
-  src += `\nglobalThis.__X = { ${names.join(", ")} };\n`;
-  const tmp = `${SCRATCH}/harness-${n++}.mjs`;
-  fs.writeFileSync(tmp, STUBS + src);
-  await import("file:///" + tmp.replace(/\\/g, "/"));
-  return globalThis.__X;
-}
+fake.props = {};
 
 const PROJECT = "acme/team/trunk/db";
 const SQL = "install/nacos脚本/install_c3i_nacos.sql";
@@ -113,8 +84,6 @@ const eq = (label, got, want) => {
   else { fails.push(label); console.log(`FAIL ${label}\n  got  ${JSON.stringify(got)}\n  want ${JSON.stringify(want)}`); }
 };
 
-const { MrReview, enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines } =
-  await loadMod(MOD, ["MrReview", "enc", "unquote", "chunks", "fileOf", "say", "tint", "splitRows", "treeRows", "mdLines"]);
 
 // --- the pure helpers ---
 eq("enc 把仓库路径编成项目端点要的写法", enc(PROJECT), "acme%2Fteam%2Ftrunk%2Fdb");

@@ -20,7 +20,7 @@ const TIMEOUT = 20000;
 
 // Where Pi keeps a folder's sessions: D:\Projects\app -> --D--Projects-app--. Its own
 // encoding drops the leading separator first, then replaces the rest.
-function slugOf(folder) {
+export function slugOf(folder) {
   const path = String(folder || "").replace(/^[\\/]+/, "");
   return "--" + path.replace(/[:\/\\]/g, "-") + "--";
 }
@@ -28,7 +28,7 @@ function slugOf(folder) {
 // 2026-11-15T05-54-54-453Z_01a1ddc5-....jsonl: when it started, and the id Pi answers to.
 const FILE = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z(?:_([^/\\]*))?\.jsonl$/;
 
-function ofFile(name) {
+export function ofFile(name) {
   const m = FILE.exec(name);
   return {
     name,
@@ -51,7 +51,7 @@ function textOf(content) {
     .join("\n");
 }
 
-function oneLine(value, max = 140) {
+export function oneLine(value, max = 140) {
   const t = say(value);
   return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }
@@ -62,7 +62,7 @@ const STAMP = /"timestamp":"([^"]+)"/;
 // parsed: a long session is mostly messages, and its name is the last thing appended.
 // "partial" is the ends of a file too long to carry over a connection: enough for the
 // name, the first message and the last word, but not to count every turn in between.
-function digest(text, partial) {
+export function digest(text, partial) {
   const out = { name: "", preview: "", at: 0, turns: 0, model: "", partial: Boolean(partial) };
   const lines = String(text || "").split("\n");
   let stamped = false;
@@ -121,7 +121,7 @@ function digest(text, partial) {
   return out;
 }
 
-function ago(ms) {
+export function ago(ms) {
   if (!ms) return "";
   const s = Math.max(0, (Date.now() - ms) / 1000);
   if (s < 90) return "now";
@@ -132,7 +132,7 @@ function ago(ms) {
 }
 
 // The last stretch of a model id: "anthropic/claude-sonnet-4-5" says its maker already.
-function shortModel(model) {
+export function shortModel(model) {
   const words = String(model || "").split("/");
   return words[words.length - 1] || "";
 }

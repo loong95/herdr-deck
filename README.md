@@ -158,12 +158,35 @@ Four harnesses, and none of them needs Herdr:
 | `test/rail.test.mjs` | the rail and the MR panel against one fake layout document, so what is checked is the protocol between them: who is showing, badges, hide and show |
 | `test/mr-review.test.mjs` | what the review asks `glab` for, the file list it builds, what a confirmed dialog finally runs — no GitLab is ever touched |
 | `test/pi-sessions.test.mjs` | a real temp sessions tree, and mostly call counts, because the point of the panel is what it does *not* read |
+| `test/imports.test.mjs` | every mod loads, and its manifest has a place |
+| `test/skeleton.test.mjs` | the layout, the mods, the rail's rows and `install.ps1` still agree with each other |
 | `extensions/pi-gui-bridge/rows.test.mjs` | the display model only: row building, tool summaries, mermaid fence extraction |
 
-Each mod test builds a fake host: the mod file is read, its imports stripped, and
-the `gpui-kit` / `herdr` globals stubbed, so the real source runs under bare `node`.
-`MODS_HOME` points a test at a live home instead of this repo. The GPUI side itself
-is checked with `herdr-app check mods/<name>` plus `herdr-app shot`.
+### How a mod is tested
+
+`test/stub/` stands in for the app, and `node --import ./test/stub/register.mjs` is what puts it
+there (a module resolve hook). So a test imports the mod's **real file** —
+
+```js
+import Rail from "../mods/rail/main.js";
+```
+
+— and the `gpui-kit` / `gpui-base` / `herdr` / `fs/promises` imports inside it resolve to the
+fakes. Nothing is copied, stripped or rewritten, so a failure points at a real line.
+
+- `stub/element.mjs` — elements are Proxies: any chain of styling calls works, and what
+  matters is kept (`child`/`children`, ids, handlers, text), so a test can walk the tree
+  (`byId`, `textOf`) and fire a click.
+- `stub/kit.mjs` and `stub/base.mjs` are **separate on purpose**: importing `Input` from
+  `gpui-kit` fails here the way it fails in the app ("Could not find export 'Input' in
+  module 'gpui-kit'"). Add a name to `base.mjs` when a mod starts using one.
+- `stub/herdr.mjs` holds the world in `fake` (spaces, panes, the layout document, what `exec`
+  answers) and what the mod asked for in `log`; `fake.onRun` lets a test move the layout the
+  way the app would. `test/fake-cx.mjs` collects spawned work and timers, and
+  `settle()` lets a task loop go instead of hanging the test.
+
+The GPUI side itself is still checked with `herdr-app check mods/<name>` plus `herdr-app shot`:
+a fake proves the logic, not the pixels.
 
 ## How it fits together
 

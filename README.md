@@ -69,7 +69,22 @@ layout.
 ./install.ps1                    # copy files into place (keeps node_modules where it is)
 ./install.ps1 -Link              # junction instead: edit here, Herdr reloads live
 ./install.ps1 -Link -Replace     # swap an older plain copy for the junction
+./install.ps1 -DryRun            # say what would happen, write nothing
 ./install.ps1 -Remote 10.0.0.5   # the Pi bridge on another Herdr machine
+```
+
+### A test home, before touching your own
+
+herdr-app reads `$HERDR_APP_HOME` when it is set, and so does this script — the same order
+(`-HerdrHome`, then the variable, then `~/.config/herdr-app`), so a layout can be tried
+without going near the one that is running. The Pi extension is left alone there: it belongs to
+the Pi that runs, not to a layout.
+
+```powershell
+$env:HERDR_APP_HOME = "$env:TEMPdeck-test-home"
+./install.ps1                    # only that folder is written
+herdr-app                        # a second window, on the test home
+# in it: ctrl-shift-l -> 'deck'; close the window and delete the folder afterwards
 ```
 
 `-Link` makes the live folders junctions to this repo, so the running app reads

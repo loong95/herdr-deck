@@ -697,7 +697,11 @@ export default class PiGui extends View {
       let names = [];
       try { names = (await readdir(dir)).filter((name) => name.endsWith(".json")); } catch {}
       for (const name of names) {
-        const info = parseJson(await readTextFile(join(dir, name)));
+        // A Pi that just shut down unlinks its own file: a name from the listing
+        // can be gone by the time it is read, and that must not fail the look.
+        let text = null;
+        try { text = await readTextFile(join(dir, name)); } catch { continue; }
+        const info = parseJson(text);
         if (info) out.push(info);
       }
       return { list: out, error: null };
@@ -732,72 +736,98 @@ export default class PiGui extends View {
    * this folder — on the machine this pane is about.
    */
   discover(cx) {
+    // One look at a time: a focus, a lost bridge and the 3 s retry can all ask
+    // at once, and three probes of the same dead port help nobody.
+    if (this.looking) return;
+    this.looking = true;
     cx.spawn(async (cx) => {
-      const machine = this.targetMachine();
-      this.machine = machine;
-      const given = props() || {};
-      const wantTerminal = localId(this.want.terminal || given.terminal || "");
-      const wantSession = this.want.session || given.session || null;
-      const cwd = normPath(given.cwd || (focused() && focused().cwd) || "");
-      // Our own tab, not the focused one: a pane split in beside another terminal
-      // is bound before it has the keyboard, so focus still names the neighbour.
-      const mine = given.pane ? panes().find((pane) => pane.pane === given.pane) || null : null;
-      const ctxTab = localId((mine && mine.tab) || (focused() && focused().tab));
-      const found = await this.registrations(machine);
-      const ranked = [];
-      for (const info of found.list) {
-        if (!info.port || !info.token) continue;
-        let score = 0;
-        // A terminal named in props is what the panel was opened for; the tab is a
-        // guess by comparison, so it can break a tie but never overrule the name.
-        if (wantTerminal && localId(info.terminal) === wantTerminal) score += 500;
-        else if (ctxTab && localId(info.tab) === ctxTab) score += 300;
-        if (wantSession && info.sessionId === wantSession) score += 50;
-        if (cwd && normPath(info.cwd) === cwd) score += 20;
-        ranked.push({ info: { ...info, machine }, score });
-      }
-      // A registration can outlive a force-killed Pi: take the best one that answers.
-      // A score of 0 means "nothing about this panel matches it", so it is only
-      // used when it is the only Pi on that machine — never to hijack another
-      // folder's or another tab's session.
-      ranked.sort((a, b) => b.score - a.score);
-      const matches = ranked.filter((candidate) => candidate.score > 0);
-      const pool = matches.length ? matches : ranked.length === 1 ? ranked : [];
-      this.scan = { machine, registrations: ranked.length, matching: matches.length, alive: 0, error: found.error };
-      for (const candidate of pool) {
-        const body = await this.probe(candidate.info);
-        if (body === null) continue;
-        this.bridge = candidate.info;
-        this.bound = true;
-        this.follow = true;      // a fresh bind shows the newest row again
-        this.want = {
-          terminal: candidate.info.terminal || this.want.terminal,
-          cwd: candidate.info.cwd || this.want.cwd,
-          session: candidate.info.sessionId || this.want.session,
-        };
-        this.scan.alive += 1;
-        this.file = candidate.info.sessionFile || null;
-        this.error = null;
-        if (body && body.state) { this.state = body.state; this.version = body.version; }
-        this.refreshMeta(cx, candidate.info);
-        this.poll(cx, candidate.info);
-        this.collectDiagrams(cx);
-        if (this.picker && this.picker.kind === "file") this.searchFiles(cx);
-        if (this.picker && this.picker.kind === "session") this.loadSessions(cx);
+      try {
+        await this.look(cx);
+      } catch (error) {
+        // A look that throws used to leave the panel on "Loading…" for ever: no
+        // scan, no retry, and nothing on screen to say why. Say it, and keep
+        // looking — the next look may be the one that answers.
+        const why = String((error && error.message) || error).slice(0, 160);
+        if (!this.scan) this.scan = { machine: this.machine, registrations: 0, matching: 0, alive: 0, error: why };
+        this.error = "Cannot look for Pi" + this.why() + ": " + why;
         cx.notify();
-        return;
+      } finally {
+        this.looking = false;
+        // A Pi can start any time after this pane opened, and a look can fail:
+        // keep looking either way while nothing answers.
+        if (!this.bound) cx.timer.after(3000, (cx) => { if (!this.bound) this.discover(cx); });
       }
-      this.bridge = null;
-      await this.loadFile(cx);
-      if (!this.watching) {
-        this.watching = true;
-        // A folder on this computer can be watched; one on another machine cannot.
-        if (machine) this.watchRemote(cx);
-        else { this.watchFile(cx); this.watchBridges(cx); }
-      }
-      // A Pi can start any time after this pane opened: look again, quietly.
-      cx.timer.after(3000, (cx) => { if (!this.bridge) this.discover(cx); });
     });
+  }
+
+  /** The look itself: registrations on that machine, best match, bind or fall back. */
+  async look(cx) {
+    const machine = this.targetMachine();
+    this.machine = machine;
+    const given = props() || {};
+    const wantTerminal = localId(this.want.terminal || given.terminal || "");
+    const wantSession = this.want.session || given.session || null;
+    const cwd = normPath(given.cwd || (focused() && focused().cwd) || "");
+    // Our own tab, not the focused one: a pane split in beside another terminal
+    // is bound before it has the keyboard, so focus still names the neighbour.
+    const mine = given.pane ? panes().find((pane) => pane.pane === given.pane) || null : null;
+    const ctxTab = localId((mine && mine.tab) || (focused() && focused().tab));
+    // A tab whose terminal was closed has nothing for the panel to bind to.
+    // Telling that apart from "Pi is not running yet" is the difference between
+    // an explanation and a panel that waits for ever.
+    this.tabHasTerminal = panes().some((pane) => localId(pane.tab) === ctxTab && pane.terminal);
+    const found = await this.registrations(machine);
+    const ranked = [];
+    for (const info of found.list) {
+      if (!info.port || !info.token) continue;
+      let score = 0;
+      // A terminal named in props is what the panel was opened for; the tab is a
+      // guess by comparison, so it can break a tie but never overrule the name.
+      if (wantTerminal && localId(info.terminal) === wantTerminal) score += 500;
+      else if (ctxTab && localId(info.tab) === ctxTab) score += 300;
+      if (wantSession && info.sessionId === wantSession) score += 50;
+      if (cwd && normPath(info.cwd) === cwd) score += 20;
+      ranked.push({ info: { ...info, machine }, score });
+    }
+    // A registration can outlive a force-killed Pi: take the best one that answers.
+    // A score of 0 means "nothing about this panel matches it", so it is only
+    // used when it is the only Pi on that machine — never to hijack another
+    // folder's or another tab's session.
+    ranked.sort((a, b) => b.score - a.score);
+    const matches = ranked.filter((candidate) => candidate.score > 0);
+    const pool = matches.length ? matches : ranked.length === 1 ? ranked : [];
+    this.scan = { machine, registrations: ranked.length, matching: matches.length, alive: 0, error: found.error };
+    for (const candidate of pool) {
+      const body = await this.probe(candidate.info);
+      if (body === null) continue;
+      this.bridge = candidate.info;
+      this.bound = true;
+      this.follow = true;      // a fresh bind shows the newest row again
+      this.want = {
+        terminal: candidate.info.terminal || this.want.terminal,
+        cwd: candidate.info.cwd || this.want.cwd,
+        session: candidate.info.sessionId || this.want.session,
+      };
+      this.scan.alive += 1;
+      this.file = candidate.info.sessionFile || null;
+      this.error = null;
+      if (body && body.state) { this.state = body.state; this.version = body.version; }
+      this.refreshMeta(cx, candidate.info);
+      this.poll(cx, candidate.info);
+      this.collectDiagrams(cx);
+      if (this.picker && this.picker.kind === "file") this.searchFiles(cx);
+      if (this.picker && this.picker.kind === "session") this.loadSessions(cx);
+      cx.notify();
+      return;
+    }
+    this.bridge = null;
+    await this.loadFile(cx);
+    if (!this.watching) {
+      this.watching = true;
+      // A folder on this computer can be watched; one on another machine cannot.
+      if (machine) this.watchRemote(cx);
+      else { this.watchFile(cx); this.watchBridges(cx); }
+    }
   }
 
   /**
@@ -912,7 +942,9 @@ export default class PiGui extends View {
 
   /** One cheap request: the snapshot if this bridge is alive, else null. */
   async probe(info) {
-    const reply = await this.call(info, "/state?since=-1&wait=0", { timeout: 20000 });
+    // Short: a bridge that is listening but wedged must not hold the whole look
+    // (and the panel's "Loading…") for twenty seconds per candidate.
+    const reply = await this.call(info, "/state?since=-1&wait=0", { timeout: 5000 });
     if (reply.status === 204) return {};
     if (reply.status !== 200 || !reply.body) return null;
     return reply.body;
@@ -1339,7 +1371,9 @@ export default class PiGui extends View {
       : [div().p(8).text_color(t.dim).child(this.error
           || (this.bridge ? "No messages yet — type below, or / for commands, @ for files"
           : this.scan
-            ? (this.scan.error
+            ? (this.tabHasTerminal === false
+              ? "This tab has no terminal — the Pi that lived here is gone, so there is nothing to bind to. Split a terminal back into this tab (pane.split) and the panel follows it."
+              : this.scan.error
               ? "No live Pi bridge" + this.why() + " — " + this.scan.error + ". Check the machine in Herdr (hc machine ls)."
               : "No live Pi bridge" + this.why() + " — " + this.scan.registrations + " registration" + (this.scan.registrations === 1 ? "" : "s") +
                 ", " + this.scan.matching + " for this tab or folder, 0 answering. Start or restart Pi " +

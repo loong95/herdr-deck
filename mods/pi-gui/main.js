@@ -1566,7 +1566,17 @@ export default class PiGui extends View {
                 ", " + this.scan.matching + " for this tab or folder, 0 answering. Start or restart Pi " +
                 (this.machine ? "there" : "here") + "; the panel binds as soon as it appears.")
             : div().frames(["Loading", "Loading.", "Loading..", "Loading..."], 400)))];
-    const items = working ? [this.busyRow(t)].concat(body) : body;
+    // The column is reversed: child 0 is the visual bottom, the last child the
+    // visual top. So "follow the newest row" means "reveal child 0" — and a reply
+    // still streaming is exactly where that goes quiet: its first line is on
+    // screen when its next words land, GPUI only scrolls to a child that is out
+    // of view, so the request was one it could answer by doing nothing. The panel
+    // sat where it was while Pi talked. A one-pixel spacer *below* the newest row
+    // is only in view when the end of the column is, so revealing it means the
+    // bottom — and it stays true as the newest row grows. One pixel and not none:
+    // a box with no size is a box with nothing to reveal.
+    const end = div().flex_none().w_full().h("1px");
+    const items = working ? [end, this.busyRow(t)].concat(body) : [end].concat(body);
     const live = state ? state.status : null;
     const usage = state && state.usage && typeof state.usage.tokens === "number" ? Math.round(state.usage.tokens / 1000) + "k" : null;
 
@@ -1610,6 +1620,9 @@ export default class PiGui extends View {
         .child(v_flex().size_full().flex_col_reverse().overflow_y_scrollbar()
           .track_scroll(this.scroll)
           // Scrolling by hand stops the follow; the chip below brings it back.
+          // Nothing here can tell how far the view moved — a plain scroll area's
+          // handle takes a position and never reports one — so every wheel counts
+          // as leaving, and the chip is the way back.
           .on_scroll_wheel((_e, cx) => { if (this.follow) { this.follow = false; cx.notify(); } })
           .px(12).py(10).gap(8)
           .children(items)
@@ -1687,7 +1700,12 @@ export default class PiGui extends View {
       .child(v_flex().max_h(190).overflow_y_scrollbar().gap(1).children(listItems));
   }
 
-  /** The newest row is child 0 (the column is reversed), i.e. the bottom of the view. */
+  /**
+   * Put the very end of the transcript on screen. Child 0 is the spacer the
+   * column is drawn with (see render): the newest row, in a reversed column, is
+   * child 1 — and revealing *that* one is a no-op while its own top is still
+   * visible, which is every frame of a reply being streamed.
+   */
   pinToLatest() {
     try { this.scroll.scroll_to_item(0); } catch { /* not laid out yet */ }
   }

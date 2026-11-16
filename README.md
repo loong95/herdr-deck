@@ -319,6 +319,7 @@ Four harnesses, and none of them needs Herdr:
 | `test/logs.test.mjs` | Claude Code and Codex logs turned into rows (fixtures, plus the real folders when they exist) |
 | `test/pi-gui-logs-panel.test.mjs` | the panel reading those logs: read-only rows, no re-draw, and Codex through a shell |
 | `extensions/pi-gui-bridge/protocol.test.mjs` | the bridge's half: what every answer carries |
+| `test/pi-gui-scroll.test.mjs` | following the transcript: what is pinned (the end of the column, not the newest row), and the wheel that stops it |
 | `test/imports.test.mjs` | every mod loads, and its manifest has a place |
 | `test/skeleton.test.mjs` | the layout, the mods, the rail's rows and `install.ps1` still agree with each other |
 | `extensions/pi-gui-bridge/rows.test.mjs` | the display model only: row building, tool summaries, mermaid fence extraction |

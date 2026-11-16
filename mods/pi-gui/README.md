@@ -138,10 +138,18 @@ it focuses its own composer on open and on click.
   the `↑ earlier · N rows` chip at the top is clicked, and the header reads
   `40 / 200 rows`. A 400-row session used to cost a 670 KB response and a full
   re-render on every poll. The scroll area
-  carries a `ScrollHandle` and pins itself to the newest row after every update
-  (`scroll_to_item(0)`), so a growing session never throws the view back to the
-  top. Scrolling by hand stops that follow and shows a **↓ latest** chip that
-  turns it back on.
+  carries a `ScrollHandle` and pins itself to the end of the column after every
+  update (`scroll_to_item(0)`), so a growing session never throws the view back
+  to the top. Child 0 is a one-pixel **spacer below the newest row**, not the
+  row itself: GPUI only scrolls to a child that is out of view, and the row of a
+  reply still streaming has its first line on screen while its newest words land
+  past the fold — asking for that row was a request GPUI could answer by doing
+  nothing, and the panel sat where it was while Pi talked. Asking for the spacer
+  means the bottom of the transcript, and stays true as the row grows.
+  Scrolling by hand stops that follow and shows a **↓ latest** chip that turns it
+  back on (the chip pins the same way, so it too reaches the last line). There is
+  no auto-detect of "scrolled back to the bottom": a plain scroll area's handle
+  takes a position and never reports one, so every wheel counts as leaving.
 - **A run in progress is drawn, not implied.** Streaming text shows Pi talking,
   but a long tool call, a slow first token or a remote round trip shows nothing
   at all — so while `busy` (or while a send is in flight) the transcript gains a

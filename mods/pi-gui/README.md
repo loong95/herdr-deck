@@ -236,9 +236,10 @@ Two things worth knowing:
   on a new port and rewrites its registration; the panel notices the drop, waits
   2.5 s and rediscovers. That is expected, not a failure.
 
-The bridge only starts when `ctx.mode === "tui"`; RPC and print-mode sessions
-already have a client driving them. A bridge failure is swallowed so it can
-never break Pi.
+The bridge only starts when `ctx.mode === "tui"` — of Pi's four
+(`tui` | `rpc` | `json` | `print`), the other three already have a client driving
+their stdio, and none of them draws a TUI for Pi's own dialogs to be answered in.
+A bridge failure is swallowed so it can never break Pi.
 
 ## Tests
 

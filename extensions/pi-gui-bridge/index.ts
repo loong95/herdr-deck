@@ -605,7 +605,8 @@ export default function (pi) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    // TUI only: an RPC or print-mode session already has a client driving it.
+    // TUI only: a session in rpc, json or print mode already has a client driving
+    // it over stdio.
     if (!ctx || ctx.mode !== "tui") return;
     try {
       await start(pi, ctx);

@@ -9,6 +9,23 @@ This repo is the **source of truth**. Herdr loads from `~/.config/herdr-app/` an
 loads from `~/.pi/agent/extensions/`, so run `install.ps1` after changing anything
 here (or install once with `-Link` and edit live).
 
+## Credits
+
+The ideas this leans on, and where they came from:
+
+- **[Flockbook](https://github.com/minchenlee/flockbook)** (MIT) — a reading view for coding agents,
+  rebuilt as a Herdr layout too. Its [`herdr-app/`](https://github.com/minchenlee/flockbook/tree/main/herdr-app)
+  folder is the closest thing to this one, and several answers here are its answers:
+  - `mods/pi-gui/blocks.js` and `mdblocks.js` are adapted from its files of the same names —
+    code boxes and tables drawn by hand, because `TextView.markdown` draws them square;
+  - the test host (`test/stub/`) follows its pattern: a module resolve hook, Proxy elements and a
+    fake `herdr`, so a test imports the mod's real source;
+  - the board's **Needs you** and **Overview** screens come from its `needs.js` and `overview.js`;
+  - the rail's kinds of row, the 150 ms de-dupe when a command reaches every copy of a panel, and
+    `SPIN_MS = 900` for the spinner are all its answers to problems it hit first.
+- **Herdr** itself, for `mods/menu-pi` and `layouts/deck.json` — both are clones of its shipped
+  `menu` and `main` (0.1.15), with one row and one column added.
+
 ## What is in it
 
 | Path | Runs as | Loaded from |
@@ -30,8 +47,9 @@ from the new version and re-applying the additions — one checklist, one place.
 `mods/pi-gui/` is the deep end and has its own README: the key behaviour, the
 bridge protocol, remote machines, known limits.
 
-MIT (see LICENSE). `mods/pi-gui/blocks.js` and `mdblocks.js` are adapted from Flockbook's
-herdr-app mod, which is MIT too; the honour is in the files themselves.
+MIT (see LICENSE). `mods/pi-gui/blocks.js` and `mdblocks.js` are adapted from
+[Flockbook](https://github.com/minchenlee/flockbook)'s herdr-app mod, which is MIT too; the honour is
+in the files themselves, and the Credits section says what else came from there.
 
 ## The layout
 

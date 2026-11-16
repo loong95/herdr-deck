@@ -104,6 +104,46 @@ old hand-copied mods into links.
 The layout is one file and lands in a folder full of other layouts, so it is linked
 file by file (a hard link, which needs no admin rights) rather than as a folder.
 
+## Claude Code and Codex, without a bridge
+
+Pi is the only agent with an extension API, so it is the only one with a live bridge. The other
+two are read from the session logs they leave behind, and the same panel draws them — read-only,
+with the agent's name in the header and `read-only · Claude Code` (or `Codex`) under the
+composer:
+
+```powershell
+# beside the terminal it is about (no props: it looks at the terminal of its own tab)
+herdr-app do pane.split '{"direction":"right","mod":"pi-gui"}'
+# or ask for one directly
+herdr-app do tab.new '{"mod":"pi-gui","props":{"agent":"claude","cwd":"D:/Projects/api"}}'
+herdr-app do tab.new '{"mod":"pi-gui","props":{"agent":"codex"}}'
+```
+
+| Agent | Where the conversation comes from | How it is read |
+|---|---|---|
+| Pi | the bridge (live), else `~/.pi/agent/sessions/` | `readTextFile` |
+| Claude Code | `~/.claude/projects/<cwd as dashes>/<session>.jsonl` | `readTextFile`: the newest session in that folder |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | one `powershell` (or `sh`) call that finds the newest rollout and prints its last 600 lines |
+
+`mods/pi-gui/logs.js` turns each format into the rows the panel already drew for Pi: a
+Claude `tool_use` block and a Codex `function_call` become tool cards, their results hang on the
+card that asked, thinking stays folded, and the noise (attachments, `api-request`, token counts,
+Codex's own instructions) is dropped. The formats were read off real files, and the tests that
+check them run against the real folders when they exist.
+
+Three things worth knowing, each found the hard way:
+
+- **`~/.codex` is off limits to a mod.** A `readTextFile` or `readdir` under it never answers, and
+  it takes the whole mod runtime with it: every panel in the window stops until the tab is
+  closed (Herdr keeps the agent's `auth.json` there). So Codex is read through a process, which
+  also gets round the 1 MiB a read would stop at.
+- **Codex shows the newest session, not the one for a folder.** A rollout's name carries its
+  start time and its id, not its cwd, and every candidate would cost a process to look at. The
+  header says which folder the session on screen ran in.
+- **Read-only is real.** Nothing is typed into those terminals: approvals and answers are the
+  agent's own TUI. A bridge for them — the way Pi's extension is one — is the next step, not
+  a side effect of this.
+
 ## Keys
 
 One file outside this repo has to know about the deck: `keys.json`. It takes the deck's keys
@@ -190,6 +230,8 @@ Four harnesses, and none of them needs Herdr:
 | `test/blocks.test.mjs` | the markdown splitter pi-gui draws code boxes and tables from (pure: bare node) |
 | `test/mdblocks.test.mjs` | the code boxes and tables themselves, walked as an element tree |
 | `test/pi-gui-wire.test.mjs` | the panel's half of the bridge protocol: a version apart is said, a missing capability is not offered |
+| `test/logs.test.mjs` | Claude Code and Codex logs turned into rows (fixtures, plus the real folders when they exist) |
+| `test/pi-gui-logs-panel.test.mjs` | the panel reading those logs: read-only rows, no re-draw, and Codex through a shell |
 | `extensions/pi-gui-bridge/protocol.test.mjs` | the bridge's half: what every answer carries |
 | `test/imports.test.mjs` | every mod loads, and its manifest has a place |
 | `test/skeleton.test.mjs` | the layout, the mods, the rail's rows and `install.ps1` still agree with each other |

@@ -8,6 +8,7 @@
 // A bridge on this machine or another one: the header says which.
 import { View, div, image } from "gpui-kit";
 import { markdownView } from "./mdblocks.js";
+import { KINDS, agentKind, claudeSlug, entriesFor, metaFor } from "./logs.js";
 
 // The bridge speaks a protocol and lists what it can be asked for
 // (extensions/pi-gui-bridge/protocol.ts). It is installed separately — sometimes on another
@@ -326,8 +327,11 @@ function buildRows(entries) {
     const m = e && e.type === "message" ? e.message : null;
     if (m && m.role === "toolResult" && m.toolCallId) results.set(m.toolCallId, textOf(m.content));
   }
+  // Pi's log is a tree and the panel shows the active branch; a Claude or Codex log has
+  // already been flattened into the conversation by logs.js (and keeps its own order).
+  const ordered = entries.some((e) => e && (e.parentId || e.parentUuid)) ? branch(entries) : entries;
   const rows = [];
-  for (const e of branch(entries)) {
+  for (const e of ordered) {
     if (!e || e.type !== "message" || !e.message) continue;
     const m = e.message;
     const id = e.id || "e" + rows.length;
@@ -552,6 +556,8 @@ export default class PiGui extends View {
     this.picker = null;          // {kind: "model"|"thinking"|"command"|"file"|"session", filter}
     this.fileItems = [];
     this.sessions = [];
+    this.logKind = null;         // whose session log is on screen: "pi" | "claude" | "codex"
+    this.logMeta = null;         // what that log says about itself (cwd, when, model)
     this.wire = null;            // the protocol the bridge answered with
     this.caps = null;            // what it says it can do (a Set once one answer said so)
     this.error = null;
@@ -771,7 +777,50 @@ export default class PiGui extends View {
    * Prefer the bridge bound to props().terminal, else the Pi in this tab, else
    * this folder — on the machine this pane is about.
    */
+  /** The line after the title: the session, or — read-only — whose log it is and where. */
+  headerLabel() {
+    const state = this.state;
+    if (state) return state.name || state.cwd || "";
+    if (this.logKind && this.logKind !== "pi") {
+      return KINDS[this.logKind].label + " · " + ((this.logMeta && this.logMeta.cwd) || this.file || "");
+    }
+    return this.file || "";
+  }
+
+  /** What this panel says it is: the agent whose conversation is on screen. */
+  title() {
+    const kind = this.logKind || this.kindAsked();
+    return kind ? KINDS[kind].label : "Pi";
+  }
+
+  /** The agent asked for in props, when props names one this panel can read. */
+  kindAsked() {
+    // props() is null when a block has none (herdr-app check does that).
+    const asked = String((props() || {}).agent || "").toLowerCase();
+    return KINDS[asked] ? asked : null;
+  }
+
   discover(cx) {
+    // Claude Code and Codex keep no bridge: an explicit ask goes straight to the log, even
+    // when a Pi on this machine would answer (a panel of a Claude session is not a Pi panel).
+    const asked = this.kindAsked();
+    if (asked && asked !== "pi") {
+      this.bridge = null;
+      this.bound = false;
+      // A log file is appended to, and its folder can be deep (Codex: a folder per day) — a
+      // watch there is more than this needs. Two seconds of nothing is not worth a watcher.
+      if (!this.watching) this.watching = true;
+      // A rejection here used to leave the panel on "Loading…" with nothing to read.
+      const failed = (error) => {
+        this.error = "Cannot read a " + KINDS[asked].label + " log: " + String((error && error.message) || error).slice(0, 200);
+        cx.notify();
+      };
+      this.loadFile(cx).catch(failed);
+      // The log grows while the agent talks: re-read it on a timer (a watch on a folder per
+      // day is not worth it), and bind nothing.
+      cx.timer.every(2000, (cx) => this.loadFile(cx).catch(failed));
+      return;
+    }
     // One look at a time: a focus, a lost bridge and the 3 s retry can all ask
     // at once, and three probes of the same dead port help nobody.
     if (this.looking) return;
@@ -1039,17 +1088,163 @@ export default class PiGui extends View {
     });
   }
 
-  async loadFile(cx) {
-    const path = props().file || await this.latest();
-    if (!path) { this.error = "No Pi session" + this.why() + " for this folder"; cx.notify(); return; }
-    if (path !== this.file) { this.file = path; this.textLen = 0; }
+  /**
+   * Who and where this panel is about: props.agent / props.cwd when given, else the program
+   * and folder of the terminal it was opened for. Pi, Claude Code and Codex are all read the
+   * same way when nothing answers — from their session log.
+   */
+  subject() {
+    const given = props() || {};
+    const asked = String(given.agent || "").toLowerCase();
+    const want = localId(given.terminal || (this.want && this.want.terminal) || "");
+    const here = focused();
+    const pane = (want && panes().find((p) => localId(p.terminal) === want))
+      || (here && here.pane ? panes().find((p) => p.pane === here.pane) : null)
+      || null;
+    const kind = KINDS[asked] ? asked : (agentKind(pane && pane.app) || "pi");
+    const cwd = given.cwd || (pane && pane.cwd) || (here && here.cwd) || "";
+    return { kind, cwd };
+  }
+
+  /** Where that agent keeps its session logs — here, or on the machine this panel is about. */
+  async logRoot(kind) {
+    if (kind === "pi") return this.piDir("sessions");
+    const root = this.machine ? await this.homeOf() : home();
+    const parts = kind === "claude" ? [".claude", "projects"] : [".codex", "sessions"];
+    return this.machine ? child(root, parts.join("/")) : join(root, ...parts);
+  }
+
+  /**
+   * The session logs of this folder, newest first. Newest by name, not by mtime: a log's name
+   * carries its start (Codex) and the folder is one conversation's (Claude), and a name is
+   * all listNames gives us on another machine. A session with nothing in it is skipped by the
+   * caller, which walks on to the next.
+   */
+  async candidatesFor(kind, cwd) {
+    const root = await this.logRoot(kind);
+
+    if (kind === "claude") {
+      // projects/<cwd as dashes>/<session-uuid>.jsonl. The slug is deterministic; only the
+      // drive letter's case is not, so the compare is case-insensitive.
+      const want = claudeSlug(cwd).toLowerCase();
+      if (!want) return [];
+      const dirs = await this.listNames(root);
+      const name = dirs.find((d) => d.toLowerCase() === want);
+      if (!name) return [];
+      const dir = this.sub(root, name);
+      const files = (await this.listNames(dir)).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+      return files.map((f) => this.sub(dir, f));
+    }
+
+    // Codex is not read through the app's fs at all (see readCodexTail): a call into its
+    // folder takes the whole mod runtime down with it, so the path comes from the same
+    // process that reads it.
+    if (kind === "codex") return [];
+
+    const one = await this.latest();
+    return one ? [one] : [];
+  }
+
+  /**
+   * A Codex session read through a process, not through the app's fs: a read or a listing
+   * under ~/.codex never answers, and it takes the whole mod runtime with it — every mod in
+   * the window stops (found by trying; the app guards that folder, and auth.json lives there).
+   * One command finds the newest rollout and prints its tail, which is also what a chat wants
+   * of a log that grows past the 1 MiB a read would stop at.
+   */
+  async readCodexTail(lines = 600) {
+    if (this.machine) return { path: null, text: null, error: "Codex on another machine is not wired yet" };
+    const win = [
+      "$d = Join-Path $env:USERPROFILE '.codex\\sessions';",
+      "$f = Get-ChildItem -LiteralPath $d -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1;",
+      "if ($f) { $f.FullName; Get-Content -LiteralPath $f.FullName -Tail " + lines + " }",
+    ].join(" ");
+    const unix = 'f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1); [ -n "$f" ] && { echo "$f"; tail -n ' + lines + ' "$f"; }';
+    for (const [cmd, args] of [["powershell", ["-NoProfile", "-NonInteractive", "-Command", win]], ["sh", ["-c", unix]]]) {
+      try {
+        const result = await exec(cmd, args, { timeout: 25000 });
+        if (result.code !== 0) continue;
+        const text = String(result.stdout || "");
+        const first = text.indexOf("\n");
+        if (first < 0) continue;
+        return { path: text.slice(0, first).trim(), text: text.slice(first + 1) };
+      } catch { /* the next shell */ }
+    }
+    return { path: null, text: null, error: "No shell could list ~/.codex/sessions" };
+  }
+
+  /** One log file as rows: { rows, meta, text }, or null when it holds no conversation. */
+  async readLog(path, kind) {
     const text = await readTextFile(path, { on: this.machine || null });
-    if (text == null) { this.error = "Cannot read " + path + this.why(); cx.notify(); return; }
-    if (text.length === this.textLen) return;
-    this.textLen = text.length;
-    this.rows = buildRows(parseJsonl(text));
-    this.error = null;
-    if (this.follow) this.pinToLatest();
+    if (text == null) return { rows: [], meta: null, text: null };
+    const lines = String(text).split("\n");
+    const entries = entriesFor(kind, lines);
+    const rows = buildRows(entries || parseJsonl(text));
+    return { rows, meta: metaFor(kind, lines), text };
+  }
+
+  async loadFile(cx) {
+    const { kind, cwd } = this.subject();
+
+    // Codex goes first and never touches the app's fs (readCodexTail says why).
+    if (kind === "codex") {
+      this.logKind = kind;
+      const read = await this.readCodexTail();
+      if (read.error) { this.error = read.error; cx.notify(); return; }
+      if (!read.path || read.text == null) {
+        this.error = "No Codex session" + this.why() + " for this folder";
+        this.rows = [];
+        cx.notify();
+        return;
+      }
+      if (read.path === this.file && read.text.length === this.textLen) return;
+      this.file = read.path;
+      this.textLen = read.text.length;
+      const lines = read.text.split("\n");
+      this.rows = buildRows(entriesFor("codex", lines) || []);
+      this.logMeta = metaFor("codex", lines);
+      this.error = null;
+      if (this.follow) this.pinToLatest();
+      cx.notify();
+      return;
+    }
+
+    const given = props() || {};
+    const asked = given.file || given.session || null;
+    if (kind !== this.logKind) { this.logKind = kind; this.textLen = 0; this.file = asked; }
+
+    // The file already on screen is re-read as it grows; anything else is looked up once.
+    if (this.file) {
+      const read = await this.readLog(this.file, kind);
+      if (read.text == null) { this.error = "Cannot read " + this.file + this.why(); cx.notify(); return; }
+      if (read.text.length === this.textLen) return;
+      this.textLen = read.text.length;
+      this.rows = read.rows;
+      this.logMeta = read.meta;
+      this.error = null;
+      if (this.follow) this.pinToLatest();
+      cx.notify();
+      return;
+    }
+
+    const candidates = asked ? [asked] : await this.candidatesFor(kind, cwd);
+    for (const path of candidates.slice(0, 6)) {
+      const read = await this.readLog(path, kind);
+      // A session with no messages (a fresh one, or a stub) is not what the panel is for.
+      if (read.text == null || !read.rows.length) continue;
+      this.file = path;
+      this.textLen = read.text.length;
+      this.rows = read.rows;
+      this.logMeta = read.meta;
+      this.error = null;
+      if (this.follow) this.pinToLatest();
+      cx.notify();
+      return;
+    }
+    this.error = candidates.length
+      ? "No conversation in " + KINDS[kind].label + " session" + this.why() + " for this folder"
+      : "No " + KINDS[kind].label + " session" + this.why() + " for this folder";
+    this.rows = [];
     cx.notify();
   }
 
@@ -1077,8 +1272,9 @@ export default class PiGui extends View {
 
   watchFile(cx) {
     cx.spawn(async (cx) => {
-      const root = await this.piDir("sessions");
       for (;;) {
+        // The folder of whichever agent is on screen: Pi, Claude Code or Codex.
+        const root = await this.logRoot(this.subject().kind);
         await watchFolder(root);
         if (this.bridge) return;
         await this.loadFile(cx);
@@ -1403,7 +1599,7 @@ export default class PiGui extends View {
     // the bottom (the column is flex_col_reverse).
     const kept = count > TAIL ? all.slice(count - TAIL) : all;
     const groups = groupRows(kept).reverse();
-    const where = state ? (state.name || state.cwd || "") : (this.file || "");
+    const where = this.headerLabel();
     const modelChip = meta && meta.model ? meta.model.id : (state && state.model ? state.model : null);
     const level = meta && meta.thinking ? meta.thinking.level : null;
     const busy = Boolean(state && state.busy);
@@ -1441,7 +1637,7 @@ export default class PiGui extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => { if (e.key === "escape" && this.picker) { this.closePicker(cx); cx.stop_propagation(); } })
       .child(h_flex().flex_none().h(38).px(10).gap(6).items_center().border_b(1).border_color(t.border)
-        .child(div().font_semibold().child("Pi"))
+        .child(div().font_semibold().child(this.title()))
 
         .child(div().flex_1().min_w(0).text_size(11).text_color(t.dim).truncate().child(where))
         .when(Boolean(this.machine), (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border)
@@ -1496,7 +1692,8 @@ export default class PiGui extends View {
           .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
         .when(Boolean(this.bridge), (e) => e.child(h_flex().id("pi-send").h(32).px(14).items_center().rounded(8).bg(t.solid).text_color(t.solid_foreground).text_size(12).cursor_pointer()
           .on_click((_ev, cx) => this.send(cx)).child(this.sending ? "…" : "Send")))
-        .when(!this.bridge, (e) => e.child(div().h(32).px(10).flex().items_center().text_size(11).text_color(t.dim).child("read-only · no bridge")))));
+        .when(!this.bridge, (e) => e.child(div().h(32).px(10).flex().items_center().text_size(11).text_color(t.dim)
+          .child("read-only · " + (this.logKind && this.logKind !== "pi" ? KINDS[this.logKind].label : "no bridge"))))));
   }
 
   /**

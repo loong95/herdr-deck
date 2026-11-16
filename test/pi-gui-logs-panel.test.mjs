@@ -1,5 +1,5 @@
 // The panel's read-only mode: the session log of an agent that keeps no bridge, turned into
-// the rows the transcript draws. Codex goes through a process (readCodexTail), the app's fs
+// the rows the transcript draws. Codex goes through a process (readTail), the app's fs
 // being off limits there; Claude Code is read straight.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -59,19 +59,22 @@ test("no shell, no Codex: a sentence instead of a hang", async () => {
   assert.equal(v.rows.length, 0);
 });
 
-test("a Claude session is read from the file, and says where it ran", async () => {
-  fake.props = { agent: "claude", cwd: "D:/Projects/demo", file: "C:\\logs\\claude.jsonl" };
-  globalThis.__home = "C:\\Users\\someone";
-  fake.readText = async () => [
-    JSON.stringify({ type: "user", uuid: "u1", sessionId: "s1", cwd: "D:\\Projects\\demo", message: { role: "user", content: "fix it" } }),
-    JSON.stringify({ type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }),
-  ].join("\n");
+test("a Claude session is read by a shell too, and says where it ran", async () => {
+  fake.props = { agent: "claude", cwd: "D:\\Projects\\demo" };
+  const claudeLines = [
+    { type: "user", uuid: "u1", sessionId: "s1", cwd: "D:\\Projects\\demo", message: { role: "user", content: "fix it" } },
+    { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+  ];
+  fake.exec = async (cmd, args) => {
+    // The shell is asked for the newest log of this folder: the slug is in the script.
+    assert.ok(String(args).includes("D--Projects-demo"), "the project folder is the cwd with dashes");
+    return { code: 0, stdout: "C:\\logs\\claude.jsonl\n" + claudeLines.map((l) => JSON.stringify(l)).join("\n") };
+  };
   const cx = fakeCx();
   const v = panel();
   await v.loadFile(cx);
   assert.deepEqual(v.rows.map((r) => r.kind), ["user", "assistant"]);
   assert.equal(v.logMeta.cwd, "D:\\Projects\\demo");
   assert.equal(v.headerLabel(), "Claude Code · D:\\Projects\\demo");
-  delete fake.readText;
-  delete globalThis.__home;
+  assert.equal(v.title(), "Claude Code");
 });

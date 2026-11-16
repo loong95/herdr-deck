@@ -122,8 +122,8 @@ herdr-app do tab.new '{"mod":"pi-gui","props":{"agent":"codex"}}'
 | Agent | Where the conversation comes from | How it is read |
 |---|---|---|
 | Pi | the bridge (live), else `~/.pi/agent/sessions/` | `readTextFile` |
-| Claude Code | `~/.claude/projects/<cwd as dashes>/<session>.jsonl` | `readTextFile`: the newest session in that folder |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | one `powershell` (or `sh`) call that finds the newest rollout and prints its last 600 lines |
+| Claude Code | `~/.claude/projects/<cwd as dashes>/<session>.jsonl` | one `powershell` (or `sh`) call: the newest session in that folder, its last 600 lines |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | the same, over the newest rollout |
 
 `mods/pi-gui/logs.js` turns each format into the rows the panel already drew for Pi: a
 Claude `tool_use` block and a Codex `function_call` become tool cards, their results hang on the
@@ -133,10 +133,12 @@ check them run against the real folders when they exist.
 
 Three things worth knowing, each found the hard way:
 
-- **`~/.codex` is off limits to a mod.** A `readTextFile` or `readdir` under it never answers, and
-  it takes the whole mod runtime with it: every panel in the window stops until the tab is
-  closed (Herdr keeps the agent's `auth.json` there). So Codex is read through a process, which
-  also gets round the 1 MiB a read would stop at.
+- **Neither folder is read through the app's fs any more.** `~/.codex` is off limits: a
+  `readTextFile` or `readdir` under it never answers, and it takes the whole mod runtime
+  with it — every panel in the window stops until the tab is closed (Herdr keeps the agent's
+  `auth.json` there). `~/.claude` answers, but slowly enough to leave the panel on "Loading"
+  for half a minute. A shell has neither problem, and it can print the tail of a 40 MB log
+  instead of the first 1 MiB a read would stop at.
 - **Codex shows the newest session, not the one for a folder.** A rollout's name carries its
   start time and its id, not its cwd, and every candidate would cost a process to look at. The
   header says which folder the session on screen ran in.

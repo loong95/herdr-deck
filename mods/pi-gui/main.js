@@ -1106,60 +1106,33 @@ export default class PiGui extends View {
     return { kind, cwd };
   }
 
-  /** Where that agent keeps its session logs — here, or on the machine this panel is about. */
-  async logRoot(kind) {
-    if (kind === "pi") return this.piDir("sessions");
-    const root = this.machine ? await this.homeOf() : home();
-    const parts = kind === "claude" ? [".claude", "projects"] : [".codex", "sessions"];
-    return this.machine ? child(root, parts.join("/")) : join(root, ...parts);
-  }
-
   /**
-   * The session logs of this folder, newest first. Newest by name, not by mtime: a log's name
-   * carries its start (Codex) and the folder is one conversation's (Claude), and a name is
-   * all listNames gives us on another machine. A session with nothing in it is skipped by the
-   * caller, which walks on to the next.
+   * An agent's newest session for this folder, read by a process — never by the app's fs.
+   *
+   * ~/.codex is off limits to a mod: a read there never answers and it takes the whole mod
+   * runtime with it (the app keeps auth.json there). ~/.claude answers, but slowly enough to
+   * leave the panel on "Loading" for half a minute. A shell has neither problem, and it can
+   * print the *tail* of a log — which is what a conversation wants of one that has grown past
+   * the 1 MiB a read would stop at.
    */
-  async candidatesFor(kind, cwd) {
-    const root = await this.logRoot(kind);
-
-    if (kind === "claude") {
-      // projects/<cwd as dashes>/<session-uuid>.jsonl. The slug is deterministic; only the
-      // drive letter's case is not, so the compare is case-insensitive.
-      const want = claudeSlug(cwd).toLowerCase();
-      if (!want) return [];
-      const dirs = await this.listNames(root);
-      const name = dirs.find((d) => d.toLowerCase() === want);
-      if (!name) return [];
-      const dir = this.sub(root, name);
-      const files = (await this.listNames(dir)).filter((f) => f.endsWith(".jsonl")).sort().reverse();
-      return files.map((f) => this.sub(dir, f));
-    }
-
-    // Codex is not read through the app's fs at all (see readCodexTail): a call into its
-    // folder takes the whole mod runtime down with it, so the path comes from the same
-    // process that reads it.
-    if (kind === "codex") return [];
-
-    const one = await this.latest();
-    return one ? [one] : [];
-  }
-
-  /**
-   * A Codex session read through a process, not through the app's fs: a read or a listing
-   * under ~/.codex never answers, and it takes the whole mod runtime with it — every mod in
-   * the window stops (found by trying; the app guards that folder, and auth.json lives there).
-   * One command finds the newest rollout and prints its tail, which is also what a chat wants
-   * of a log that grows past the 1 MiB a read would stop at.
-   */
-  async readCodexTail(lines = 600) {
-    if (this.machine) return { path: null, text: null, error: "Codex on another machine is not wired yet" };
-    const win = [
-      "$d = Join-Path $env:USERPROFILE '.codex\\sessions';",
-      "$f = Get-ChildItem -LiteralPath $d -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1;",
-      "if ($f) { $f.FullName; Get-Content -LiteralPath $f.FullName -Tail " + lines + " }",
-    ].join(" ");
-    const unix = 'f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1); [ -n "$f" ] && { echo "$f"; tail -n ' + lines + ' "$f"; }';
+  async readTail(kind, cwd, lines = 600) {
+    if (this.machine) return { path: null, text: null, error: KINDS[kind].label + " on another machine is not wired yet" };
+    const slug = claudeSlug(cwd);
+    const quote = (value) => "'" + String(value).replace(/'/g, "''") + "'";
+    const win = kind === "claude"
+      ? [
+        "$p = Join-Path (Join-Path (Join-Path $env:USERPROFILE '.claude') 'projects') " + quote(slug) + ";",
+        "$f = Get-ChildItem -LiteralPath $p -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1;",
+        "if ($f) { $f.FullName; Get-Content -LiteralPath $f.FullName -Tail " + lines + " }",
+      ].join(" ")
+      : [
+        "$d = Join-Path (Join-Path $env:USERPROFILE '.codex') 'sessions';",
+        "$f = Get-ChildItem -LiteralPath $d -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1;",
+        "if ($f) { $f.FullName; Get-Content -LiteralPath $f.FullName -Tail " + lines + " }",
+      ].join(" ");
+    const unix = kind === "claude"
+      ? 'f=$(ls -t "$HOME/.claude/projects/' + slug + '\"/*.jsonl 2>/dev/null | head -1); [ -n "$f" ] && { echo "$f"; tail -n ' + lines + ' "$f"; }'
+      : 'f=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1); [ -n "$f" ] && { echo "$f"; tail -n ' + lines + ' "$f"; }';
     for (const [cmd, args] of [["powershell", ["-NoProfile", "-NonInteractive", "-Command", win]], ["sh", ["-c", unix]]]) {
       try {
         const result = await exec(cmd, args, { timeout: 25000 });
@@ -1170,29 +1143,19 @@ export default class PiGui extends View {
         return { path: text.slice(0, first).trim(), text: text.slice(first + 1) };
       } catch { /* the next shell */ }
     }
-    return { path: null, text: null, error: "No shell could list ~/.codex/sessions" };
-  }
-
-  /** One log file as rows: { rows, meta, text }, or null when it holds no conversation. */
-  async readLog(path, kind) {
-    const text = await readTextFile(path, { on: this.machine || null });
-    if (text == null) return { rows: [], meta: null, text: null };
-    const lines = String(text).split("\n");
-    const entries = entriesFor(kind, lines);
-    const rows = buildRows(entries || parseJsonl(text));
-    return { rows, meta: metaFor(kind, lines), text };
+    return { path: null, text: null, error: "No shell could list the " + KINDS[kind].label + " logs" };
   }
 
   async loadFile(cx) {
     const { kind, cwd } = this.subject();
 
-    // Codex goes first and never touches the app's fs (readCodexTail says why).
-    if (kind === "codex") {
+    // Claude Code and Codex: the newest log for this folder, read by a shell (readTail says why).
+    if (kind !== "pi") {
       this.logKind = kind;
-      const read = await this.readCodexTail();
+      const read = await this.readTail(kind, cwd);
       if (read.error) { this.error = read.error; cx.notify(); return; }
       if (!read.path || read.text == null) {
-        this.error = "No Codex session" + this.why() + " for this folder";
+        this.error = "No " + KINDS[kind].label + " session" + this.why() + " for this folder";
         this.rows = [];
         cx.notify();
         return;
@@ -1201,50 +1164,29 @@ export default class PiGui extends View {
       this.file = read.path;
       this.textLen = read.text.length;
       const lines = read.text.split("\n");
-      this.rows = buildRows(entriesFor("codex", lines) || []);
-      this.logMeta = metaFor("codex", lines);
+      this.rows = buildRows(entriesFor(kind, lines) || []);
+      this.logMeta = metaFor(kind, lines);
       this.error = null;
       if (this.follow) this.pinToLatest();
       cx.notify();
       return;
     }
 
+    // Pi: a bridge answers while it is alive, so this is the read-only fallback.
     const given = props() || {};
     const asked = given.file || given.session || null;
     if (kind !== this.logKind) { this.logKind = kind; this.textLen = 0; this.file = asked; }
-
-    // The file already on screen is re-read as it grows; anything else is looked up once.
-    if (this.file) {
-      const read = await this.readLog(this.file, kind);
-      if (read.text == null) { this.error = "Cannot read " + this.file + this.why(); cx.notify(); return; }
-      if (read.text.length === this.textLen) return;
-      this.textLen = read.text.length;
-      this.rows = read.rows;
-      this.logMeta = read.meta;
-      this.error = null;
-      if (this.follow) this.pinToLatest();
-      cx.notify();
-      return;
-    }
-
-    const candidates = asked ? [asked] : await this.candidatesFor(kind, cwd);
-    for (const path of candidates.slice(0, 6)) {
-      const read = await this.readLog(path, kind);
-      // A session with no messages (a fresh one, or a stub) is not what the panel is for.
-      if (read.text == null || !read.rows.length) continue;
-      this.file = path;
-      this.textLen = read.text.length;
-      this.rows = read.rows;
-      this.logMeta = read.meta;
-      this.error = null;
-      if (this.follow) this.pinToLatest();
-      cx.notify();
-      return;
-    }
-    this.error = candidates.length
-      ? "No conversation in " + KINDS[kind].label + " session" + this.why() + " for this folder"
-      : "No " + KINDS[kind].label + " session" + this.why() + " for this folder";
-    this.rows = [];
+    const path = asked || this.file || await this.latest();
+    if (!path) { this.error = "No Pi session" + this.why() + " for this folder"; this.rows = []; cx.notify(); return; }
+    if (path !== this.file) { this.file = path; this.textLen = 0; }
+    const text = await readTextFile(path, { on: this.machine || null });
+    if (text == null) { this.error = "Cannot read " + path + this.why(); cx.notify(); return; }
+    if (text.length === this.textLen) return;
+    this.textLen = text.length;
+    this.rows = buildRows(parseJsonl(text));
+    this.logMeta = null;
+    this.error = null;
+    if (this.follow) this.pinToLatest();
     cx.notify();
   }
 
@@ -1273,8 +1215,8 @@ export default class PiGui extends View {
   watchFile(cx) {
     cx.spawn(async (cx) => {
       for (;;) {
-        // The folder of whichever agent is on screen: Pi, Claude Code or Codex.
-        const root = await this.logRoot(this.subject().kind);
+        // Pi's session folder: Claude Code and Codex are read by a shell on a timer.
+        const root = await this.piDir("sessions");
         await watchFolder(root);
         if (this.bridge) return;
         await this.loadFile(cx);

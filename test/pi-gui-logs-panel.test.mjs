@@ -17,7 +17,7 @@ const CODEX_LINES = [
 ];
 
 const panel = () => Object.assign(new PiGui(), {
-  machine: null, want: {}, rows: [], localShow: 40, error: null, file: null, textLen: 0, logKind: null, follow: false,
+  machine: null, want: {}, rows: [], localShow: 40, error: null, file: null, textSig: "", logKind: null, follow: false,
 });
 
 test("a Codex session is read by a process, and its rows land", async () => {
@@ -77,4 +77,118 @@ test("a Claude session is read by a shell too, and says where it ran", async () 
   assert.equal(v.logMeta.cwd, "D:\\Projects\\demo");
   assert.equal(v.headerLabel(), "Claude Code · D:\\Projects\\demo");
   assert.equal(v.title(), "Claude Code");
+});
+
+// A Pi session log: a tree of entries, the panel showing the active branch.
+const PI_LINES = [
+  { type: "message", id: "e1", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+  { type: "message", id: "e2", parentId: "e1", timestamp: "t2", message: { role: "assistant", content: [{ type: "text", text: "hi there" }] } },
+];
+const piLog = () => PI_LINES.map((line) => JSON.stringify(line)).join("\n") + "\n";
+
+// What hc answers for a log of `total` lines: the real two at the very end, filler
+// before them, and the same window arithmetic hc does.
+const manyLines = (total) => {
+  const out = [];
+  for (let i = 1; i <= total - PI_LINES.length; i++) out.push(JSON.stringify({ type: "session_info", id: "s" + i }));
+  return out.concat(PI_LINES.map((line) => JSON.stringify(line)));
+};
+const hcReading = (lines) => async (cmd, args) => {
+  if (cmd !== "hc") return { code: 1, stdout: "", stderr: "not asked" };
+  const limit = Number(args[args.indexOf("--limit") + 1]);
+  const first = args.includes("--offset") ? Number(args[args.indexOf("--offset") + 1]) : 1;
+  const text = lines.slice(first - 1, first - 1 + limit).join("\n") + "\n";
+  return { code: 0, stdout: JSON.stringify({ first, last: first + limit - 1, lines: lines.length, text }), stderr: "" };
+};
+const shellReading = (stdout) => async (cmd) => (cmd === "powershell" || cmd === "sh"
+  ? { code: 0, stdout, stderr: "" }
+  : { code: 1, stdout: "", stderr: "not asked" });
+
+test("a Pi log too big for the app's read is read by hc, whole", async () => {
+  log.exec.length = 0;
+  fake.props = { agent: "pi", file: "C:\\logs\\big.jsonl" };
+  fake.readText = () => null;                 // what readTextFile answers past 1 MiB
+  fake.exec = hcReading(manyLines(2));
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  assert.equal(v.error, null);
+  assert.deepEqual(v.rows.map((r) => r.text), ["hello", "hi there"]);
+  assert.equal(v.headerLabel(), "C:\\logs\\big.jsonl", "the whole file, so no note");
+  assert.equal(log.exec.every((c) => c.cmd === "hc"), true, "hc, not a shell");
+  assert.equal(log.exec.length, 2, "one ask for the line count, one for the text");
+});
+
+test("a log longer than one window is read from its end, and says so", async () => {
+  log.exec.length = 0;
+  const lines = manyLines(3000);
+  fake.props = { agent: "pi", file: "C:\\logs\\huge.jsonl" };
+  fake.readText = () => null;
+  fake.exec = hcReading(lines);
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  assert.deepEqual(v.rows.map((r) => r.text), ["hello", "hi there"], "the newest rows are up");
+  assert.match(v.headerLabel(), /huge\.jsonl · end of the log$/, "and the header says which part");
+  const window = log.exec[1].args.join(" ");
+  assert.match(window, /--offset 1801/, "the window starts where the last 1200 lines do");
+  assert.match(window, /--limit 1200/);
+});
+
+test("an answer cut by a line taller than a page falls back to a shell", async () => {
+  log.exec.length = 0;
+  fake.props = { agent: "pi", file: "C:\\logs\\cut.jsonl" };
+  fake.readText = () => null;
+  // hc says how many lines there are, then hands back JSON that does not parse.
+  fake.exec = async (cmd, args) => {
+    if (cmd !== "hc") return shellReading(piLog())("powershell");
+    const limit = args[args.indexOf("--limit") + 1];
+    return { code: 0, stdout: limit === "1" ? JSON.stringify({ first: 1, last: 1, lines: 2, text: "x\n" }) : '{"first":1,"text":"cut', stderr: "" };
+  };
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  assert.deepEqual(v.rows.map((r) => r.text), ["hello", "hi there"]);
+  assert.match(v.headerLabel(), /end of the log$/, "a tail is what a shell gives");
+  const shell = log.exec.filter((c) => c.cmd === "powershell");
+  assert.equal(shell.length, 1, "the shell was the last resort");
+  assert.ok(String(shell[0].args).includes("Seek"), "and it read the end of the file");
+});
+
+test("a small Pi log is still the app's own read, with no process", async () => {
+  log.exec.length = 0;
+  fake.props = { agent: "pi", file: "C:\\logs\\small.jsonl" };
+  fake.readText = () => piLog();
+  fake.exec = async () => ({ code: 1, stdout: "", stderr: "not asked" });
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  assert.deepEqual(v.rows.map((r) => r.text), ["hello", "hi there"]);
+  assert.equal(log.exec.length, 0, "neither hc nor a shell was needed");
+  assert.equal(v.headerLabel(), "C:\\logs\\small.jsonl", "the whole log, so no note");
+});
+
+test("the same window twice is not re-drawn, though its length never changes", async () => {
+  fake.props = { agent: "pi", file: "C:\\logs\\huge.jsonl" };
+  fake.readText = () => null;
+  fake.exec = hcReading(manyLines(3000));
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  const rows = v.rows;
+  const before = cx.notified;
+  await v.loadFile(cx);
+  assert.equal(cx.notified, before, "nothing changed, nothing drawn");
+  assert.equal(v.rows, rows);
+});
+
+test("a log nobody can read says what it could not read", async () => {
+  fake.props = { agent: "pi", file: "C:\\logs\\gone.jsonl" };
+  fake.readText = () => null;
+  fake.exec = async () => ({ code: 1, stdout: "", stderr: "no such file" });
+  const cx = fakeCx();
+  const v = panel();
+  await v.loadFile(cx);
+  assert.match(v.error, /^Cannot read .*gone\.jsonl/);
+  assert.equal(v.rows.length, 0);
 });

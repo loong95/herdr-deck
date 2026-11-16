@@ -16,7 +16,7 @@ import { KINDS, agentKind, claudeSlug, entriesFor, metaFor } from "./logs.js";
 // bridge does not have is not offered.
 const WIRE = 1;
 import { v_flex, h_flex, TextView, InputState, Input, ScrollHandle } from "gpui-base";
-import { theme, props, appHome, readTextFile, watchFolder, home, settings, focused, panes, nextCommand, run, closeOverlay, exec, shared, setShared } from "herdr";
+import { theme, props, appHome, readTextFile, watchFolder, home, settings, focused, panes, nextCommand, run, closeOverlay, exec, hc, shared, setShared } from "herdr";
 import { Buffer } from "buffer";
 import { join, dirname } from "path";
 import { readdir, readFile, writeFile, mkdir } from "fs/promises";
@@ -62,6 +62,14 @@ async function clipboardImagePath() {
 }
 
 const TAIL = 400;
+// How many lines of a session log one hc read may hand over. More than the newest
+// rows the panel keeps (TAIL) can hold, because entries and rows are not one to
+// one: a run of tool calls is one group.
+const LOG_LINES = 1200;
+// How much of a session log one shell hands over when the app's own read stops
+// at 1 MiB: under that limit and well under the 8 MiB an exec may return, and
+// more than the newest rows the panel keeps (TAIL) can hold.
+const TAIL_BYTES = 700000;
 // A run in progress draws its own spinner. `frames` swaps the strings natively
 // and only while the element is on screen, so no timer of ours and no repaint
 // per tick: the panel stays quiet while Pi works.
@@ -193,6 +201,80 @@ async function pushBody(machine, payload) {
 /** Runs a shell script on another machine; extra args arrive as "$@". */
 function shellOn(machine, script, args, timeout) {
   return exec("sh", ["-c", script, "pi-gui", ...args], { on: machine, timeout });
+}
+
+/** `hc … --json` as an object, or null when hc would not answer. */
+async function hcJson(args) {
+  try {
+    const result = await hc(args);
+    if (!result || result.code !== 0) return null;
+    return parseJson(String(result.stdout || ""));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A session log read through hc, which is not the app's fs.
+ *
+ * `readTextFile` stops at 1 MiB — it answers null past it — and a session that has
+ * been going for a while is past it: opening one of those from the sessions list
+ * ended in "Cannot read". herdr-core reads 8 MB a page, and its answer says how
+ * many lines a file has, so `--limit 1` is a cheap way to ask: the window can
+ * then be the *end* of the log, which is the part a transcript shows. It runs on
+ * another machine with `--on`, with no quoting in between.
+ *
+ * -> {text, tailed}, tailed when the file was longer than one window; or null
+ * when hc could not read it, so the caller can try a shell.
+ */
+async function hcLog(path, on = null) {
+  const base = ["file", "read", "--json"].concat(on ? ["--on", on] : []);
+  const head = await hcJson(base.concat(["--limit", "1", path]));
+  if (!head || typeof head.lines !== "number" || head.lines < 1) return null;
+  const take = Math.min(head.lines, LOG_LINES);
+  const whole = take === head.lines;
+  const read = whole
+    ? await hcJson(base.concat(["--limit", String(take), path]))
+    : await hcJson(base.concat(["--offset", String(head.lines - take + 1), "--limit", String(take), path]));
+  if (!read || typeof read.text !== "string") return null;
+  return { text: read.text, tailed: !whole };
+}
+
+/**
+ * The last resort: the end of a file, in bytes, printed by a shell — or null when
+ * neither shell could. Bounded by construction, so one line taller than a page
+ * (a pasted image inside a session) cannot cut the answer short the way an
+ * `hc file read` can; the half-written first line is skipped by parseJsonl.
+ */
+async function tailText(path, on = null) {
+  const win = [
+    "$p = " + psQuoted(path) + "; $n = " + TAIL_BYTES + ";",
+    "$fs = [IO.File]::OpenRead($p);",
+    "if ($fs.Length -gt $n) { [void]$fs.Seek($fs.Length - $n, 'Begin') }",
+    "$sr = New-Object IO.StreamReader($fs);",
+    "$sr.ReadToEnd()",
+    "$sr.Close()",
+  ].join(" ");
+  const unix = "tail -c " + TAIL_BYTES + " " + quoted(path);
+  for (const [cmd, args] of [
+    ["powershell", ["-NoProfile", "-NonInteractive", "-Command", win]],
+    ["sh", ["-c", unix]],
+  ]) {
+    try {
+      const result = await exec(cmd, args, { timeout: 25000, on });
+      if (result.code === 0) return String(result.stdout || "");
+    } catch { /* the next shell */ }
+  }
+  return null;
+}
+
+/**
+ * "Has anything arrived?" — as a value small enough to keep: a tail is the same
+ * length however much the log grows, so its own end is what has to be compared.
+ */
+function tailSig(text) {
+  const s = String(text || "");
+  return s.length + "|" + s.slice(-200);
 }
 
 /**
@@ -551,7 +633,8 @@ export default class PiGui extends View {
     this.version = -1;
     this.rows = [];
     this.file = null;
-    this.textLen = 0;
+    this.textSig = "";           // what was read, as the "anything new?" value
+    this.tailed = false;         // the log was too big to read whole: the end of it is up
     this.open = {};
     this.picker = null;          // {kind: "model"|"thinking"|"command"|"file"|"session", filter}
     this.fileItems = [];
@@ -784,7 +867,8 @@ export default class PiGui extends View {
     if (this.logKind && this.logKind !== "pi") {
       return KINDS[this.logKind].label + " · " + ((this.logMeta && this.logMeta.cwd) || this.file || "");
     }
-    return this.file || "";
+    const file = this.file || "";
+    return this.tailed ? file + " · end of the log" : file;
   }
 
   /** What this panel says it is: the agent whose conversation is on screen. */
@@ -1160,9 +1244,9 @@ export default class PiGui extends View {
         cx.notify();
         return;
       }
-      if (read.path === this.file && read.text.length === this.textLen) return;
+      if (read.path === this.file && tailSig(read.text) === this.textSig) return;
       this.file = read.path;
-      this.textLen = read.text.length;
+      this.textSig = tailSig(read.text);
       const lines = read.text.split("\n");
       this.rows = buildRows(entriesFor(kind, lines) || []);
       this.logMeta = metaFor(kind, lines);
@@ -1175,14 +1259,31 @@ export default class PiGui extends View {
     // Pi: a bridge answers while it is alive, so this is the read-only fallback.
     const given = props() || {};
     const asked = given.file || given.session || null;
-    if (kind !== this.logKind) { this.logKind = kind; this.textLen = 0; this.file = asked; }
+    if (kind !== this.logKind) { this.logKind = kind; this.textSig = ""; this.file = asked; }
     const path = asked || this.file || await this.latest();
     if (!path) { this.error = "No Pi session" + this.why() + " for this folder"; this.rows = []; cx.notify(); return; }
-    if (path !== this.file) { this.file = path; this.textLen = 0; }
-    const text = await readTextFile(path, { on: this.machine || null });
+    if (path !== this.file) { this.file = path; this.textSig = ""; }
+    // The app's read stops at 1 MiB and answers null past it, which is exactly
+    // where a long session sits; hc reads it instead, and a shell if hc cannot.
+    let text = await readTextFile(path, { on: this.machine || null });
+    let tailed = false;
+    if (text == null) {
+      const log = await hcLog(path, this.machine || null);
+      if (log) { text = log.text; tailed = log.tailed; }
+    }
+    if (text == null) {
+      text = await tailText(path, this.machine || null);
+      tailed = text != null;
+    }
     if (text == null) { this.error = "Cannot read " + path + this.why(); cx.notify(); return; }
-    if (text.length === this.textLen) return;
-    this.textLen = text.length;
+    // What says "nothing new": the length of a whole file, or — for a tail, whose
+    // length stays put however much the log grows — the end of it.
+    const sig = tailed ? tailSig(text) : String(text.length);
+    if (sig === this.textSig) return;
+    this.textSig = sig;
+    // Said in the header: what is on screen is the end of a log too big for the
+    // app's own read, not the whole session.
+    this.tailed = tailed;
     this.rows = buildRows(parseJsonl(text));
     this.logMeta = null;
     this.error = null;

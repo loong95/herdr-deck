@@ -257,6 +257,29 @@ With no live bridge (Pi not running, or an old Pi), the panel falls back to
 Pi's session JSONL — `~/.pi/agent/sessions/--<cwd>--/*.jsonl`, watched with
 `watchFolder` — and renders the active branch read-only.
 
+A log past 1 MiB is not read through the app's fs, which stops there: the
+host's `readTextFile` answers **null** past 1 MiB (the app's own preview mods
+carry the same limit), and opening a long session used to end in
+"Cannot read …". Two fallbacks follow it, in this order:
+
+1. **`hc file read --json`** (`hcLog`) — herdr-core reads 8 MB a page and its
+   answer carries the file's line count, so `--limit 1` is a cheap way to ask
+   first and the window can then be the *end* of the log: the last 1200 lines,
+   which is more than the newest 400 rows the panel keeps. A log of up to 1200
+   lines is read whole this way (hc's own page is 8 MB, so the line count is
+   what bounds it, not the size), and another machine needs only `--on`, with no
+   quoting in between. The header says `· end of the log` when only the end is
+   up, because the "↑ earlier" paging then stops at that window — reaching
+   further back needs the window machinery the bridge path already has
+   (`older`/`/rows?before=`), which is the next step, not a bigger read.
+2. **A shell's byte tail** (`tailText`) — when hc cannot answer, e.g. one line
+   taller than a page (a pasted image inside a session) cuts its JSON short.
+   Bounded by construction: the last 700 kB, and the half-line the cut leaves is
+   skipped by `parseJsonl`.
+
+What says "nothing new" is `textSig`: the length of a whole read, or the end of
+a window, since a window keeps its length however much the log grows.
+
 ## Pi on another machine
 
 A Pi on any Herdr machine (`hc machine ls`) gets the same panel. The only extra

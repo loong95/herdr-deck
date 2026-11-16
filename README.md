@@ -30,6 +30,9 @@ from the new version and re-applying the additions — one checklist, one place.
 `mods/pi-gui/` is the deep end and has its own README: the key behaviour, the
 bridge protocol, remote machines, known limits.
 
+MIT (see LICENSE). `mods/pi-gui/blocks.js` and `mdblocks.js` are adapted from Flockbook's
+herdr-app mod, which is MIT too; the honour is in the files themselves.
+
 ## The layout
 
 `layouts/deck.json` keeps Herdr's own shell (sidebar, tabs, status strip, the pane

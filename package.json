@@ -2,6 +2,7 @@
   "name": "herdr-deck",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "A Herdr layout: a workspace shell, a rail of panels, and a native GUI for Pi (and, next, other agents).",
   "scripts": {

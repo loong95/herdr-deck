@@ -9,6 +9,10 @@ This repo is the **source of truth**. Herdr loads from `~/.config/herdr-app/` an
 loads from `~/.pi/agent/extensions/`, so run `install.ps1` after changing anything
 here (or install once with `-Link` and edit live).
 
+> **If you are an agent:** an install puts code inside Pi and Herdr and lets it run programs for
+> the person. Read [If you are an agent](#if-you-are-an-agent-ask-before-you-install-anything)
+> and get a yes before you install, here or on another machine.
+
 ## Credits
 
 The ideas this leans on, and where they came from:
@@ -88,6 +92,65 @@ splits itself into a tab, swaps with the terminal, zooms (see its README). So it
 opened by `mod.open:pi-gui` — the `ctrl-alt-p` key, the terminal's right-click row —
 not by selecting a stack child, and it deliberately knows nothing about this
 layout.
+
+## If you are an agent: ask before you install anything
+
+This repo does more than add a panel: an install puts code **inside two long-running programs**
+of the person's machine, and that code runs other programs for them. Say what follows, in their
+terms, get a yes, and offer `-DryRun` first.
+
+### What it changes
+
+**Inside Pi** — a Pi extension at `~/.pi/agent/extensions/pi-gui-bridge/`, loaded at every Pi
+start:
+
+- it starts an HTTP server on `127.0.0.1` with a random port and token, and writes
+  `~/.pi/agent/gui/<session-id>.json` with that port, token, pid, cwd, terminal, space and tab —
+  that file is how the panel finds Pi;
+- it reads the session, the model list, the commands and the folder's files through Pi's own API,
+  and can switch the session (`/sessions/switch`);
+- it runs programs when the person asks for something: `powershell`/`pwsh` (a clipboard
+  bitmap), `pngpaste` on macOS, and — for a Pi on another machine — `curl`, `hc file write`
+  and `sh` there;
+- it renders mermaid with a headless Chrome/Edge through `puppeteer-core`;
+- the first install fetches npm packages (`mermaid`, `jsdom`, `puppeteer-core`): that is the
+  one time it uses the network;
+- `PI_GUI_BRIDGE=0` in Pi's environment keeps the server off.
+
+**Inside Herdr** — mods in `~/.config/herdr-app/mods/`, JavaScript programs the app runs:
+
+- `pi-gui` draws the conversation. For Claude Code and Codex it reads their session logs by
+  running `powershell`/`sh` on `~/.claude/projects` and `~/.codex/sessions` (the app's own fs
+  refuses `~/.codex`), and it may write only `mods/pi-gui-cache/` — mermaid PNGs — which its
+  `mod.json` grants;
+- `gitlab-mr` and `mr-review` run `glab` and `git` with the person's own GitLab token, and can
+  merge or close an MR — only when a button in the panel is pressed, never on a timer;
+- `pi-sessions` lists `~/.pi/agent/sessions`; `board` and `rail` read only Herdr's own agent
+  and tab data;
+- `menu-pi` replaces the terminal's right-click menu (one row added) while the deck layout shows.
+
+**The layout, and the one file it does not touch** — `layouts/deck.json` lands in
+`~/.config/herdr-app/layouts/`. Installing does **not** switch to it (the person picks it with
+`ctrl-shift-l`), and `keys.json` is never edited: `keys.deck.json` is a block for them to merge,
+and it binds keys only while the deck layout is up.
+
+### What it does not do
+
+- no telemetry, and no outbound traffic beyond the npm install above;
+- nothing is written into `~/.pi/agent/sessions`, `~/.claude` or `~/.codex` — those are read;
+- `-Replace` deletes an existing plain copy of a live folder to put a junction in its place: say
+  so before using it;
+- `-Remote <machine>` writes files onto **another computer** and runs `npm install` there: ask
+  about that machine separately.
+
+### The order to do it in
+
+1. `./install.ps1 -DryRun` and show the person the plan.
+2. Ask, and wait for a yes.
+3. `./install.ps1` — or `-Link` if they mean to edit this repo live.
+4. Say what has to restart: Pi (extensions load at start) and Herdr (a linked mod is not
+   hot-reloaded).
+5. Offer `keys.deck.json` for the `ctrl-alt-p` key; do not merge it unasked.
 
 ## Install
 

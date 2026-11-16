@@ -5,7 +5,7 @@
 
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { exec, layout, panes, props, run, setShared, spaces, theme } from "herdr";
+import { exec, layout, panes, props, run, setShared, shared, spaces, theme } from "herdr";
 
 const PER_PAGE = "100";
 const TIMEOUT = 45000;
@@ -23,6 +23,11 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 
 // What the dock keeps its icon told with.
 const BADGE = "gitlab-mr.badge";
+// What a review tab has just merged or closed, written by mr-review: a row it names leaves
+// the list at once. The same age limit as on the writing side, so an entry a review tab
+// never got to prune cannot hide a row for good.
+const DONE = "mr-review.done";
+const DONE_KEEP = 15 * 60e3;
 
 // Which node in the layout document has this id.
 function find(node, id) {
@@ -157,6 +162,9 @@ export default class GitlabMr extends View {
     // A list from another project is worth asking about at once, not at the next poll.
     if (open && (Date.now() >= this.next || !this.wasShown || this.stale())) this.load(cx);
     this.wasShown = open;
+    // The row a review tab merged or closed is off the list on its own re-render; the dock's
+    // count follows it on this tick rather than waiting out the poll.
+    this.tell();
   }
 
   // What a list belongs to. The account's list is every project's, but not every machine's:
@@ -175,10 +183,26 @@ export default class GitlabMr extends View {
     return this.loadedFor !== this.key(folder, on);
   }
 
+  // The rows on screen: what glab said, minus what a review tab has already merged or
+  // closed. Writing shared state re-renders every mod, so the row goes as the review tab's
+  // own frame lands — waiting for the poll would leave a decided MR on the list for 45 s.
+  shown() {
+    const rows = this.rows ?? [];
+    const done = shared(DONE);
+    if (!done || typeof done !== "object") return rows;
+    const now = Date.now();
+    const gone = Object.entries(done)
+      .filter(([, at]) => now - Number(at) < DONE_KEEP)
+      .map(([k]) => k);
+    if (!gone.length) return rows;
+    const drop = new Set(gone);
+    return rows.filter((m) => !drop.has(`${m.path}!${m.iid}`));
+  }
+
   // Only what the dock needs, and only when it changed: writing shared state re-renders
   // every mod, so a fresh object on every poll would be a drumbeat nobody asked for.
   tell() {
-    const rows = this.rows;
+    const rows = this.rows === null ? null : this.shown();
     const badge = { n: rows?.length ?? 0, err: Boolean(this.error), ready: rows !== null };
     const said = JSON.stringify(badge);
     if (said === this.told) return;
@@ -360,7 +384,7 @@ export default class GitlabMr extends View {
 
   groups() {
     const by = new Map();
-    for (const m of this.rows ?? []) {
+    for (const m of this.shown()) {
       const key = m.path || "?";
       if (!by.has(key)) by.set(key, []);
       by.get(key).push(m);
@@ -377,7 +401,7 @@ export default class GitlabMr extends View {
   where() {
     if (this.stale()) return "looking…";
     if (this.mode === "project") return this.repo.why || this.project || `no GitLab repo at ${this.at || "here"}`;
-    const rows = this.rows ?? [];
+    const rows = this.shown();
     return `${rows.length} open across ${new Set(rows.map((m) => m.path)).size} projects`;
   }
 
@@ -408,20 +432,30 @@ export default class GitlabMr extends View {
     });
   }
 
+  // The row is two lines of one wide column, with the iid on their left and the status on
+  // the first line's right. Everything on the right rides the same edge, so the verdicts
+  // and the times line up down the list, and only the two titles give way when the panel
+  // is narrow — hence the `min_w(0)`s: without them a long title keeps its width, and the
+  // status beside it is pushed past the edge of the panel instead of the title shortening.
   item(t, m) {
-    return h_flex().id(`m-${m.n}`).gap(7).items_start().px(7).py(5).rounded(6)
+    return h_flex().id(`m-${m.n}`).w_full().gap(7).items_start().px(7).py(5).rounded(6)
       .hover((s) => s.bg(t.hover))
       .on_click(() => this.open(m))
       .children([
         div().flex_none().text_size(10.5).text_color(t.dim).child(`!${m.iid}`),
-        v_flex().flex_1().min_h(0).gap(2).children([
-          div().truncate().text_color(m.draft ? t.dim : t.foreground).child(m.title || "(no title)"),
-          h_flex().gap(6).text_size(10.5).text_color(t.dim).children([
-            div().flex_1().truncate().child(`${m.author} → ${m.target}`),
-            div().flex_none().child(ago(m.at)),
+        v_flex().flex_1().min_w(0).min_h(0).gap(2).children([
+          h_flex().w_full().min_w(0).gap(6).items_center().children([
+            div().flex_1().min_w(0).truncate().text_color(m.draft ? t.dim : t.foreground)
+              .child(m.title || "(no title)"),
+            this.chip(t, m),
+          ]),
+          h_flex().w_full().min_w(0).gap(6).text_size(10.5).text_color(t.dim).items_center().children([
+            div().flex_1().min_w(0).truncate().child(`${m.author} → ${m.target}`),
+            // "10h" and "2026-10-16" end on this line's right edge either way, so the ages
+            // read as a column instead of stepping in and out with the author's name.
+            div().flex_none().text_right().child(ago(m.at)),
           ]),
         ]),
-        this.chip(t, m),
       ]);
   }
 

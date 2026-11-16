@@ -5,7 +5,7 @@
 // The modules the mod imports come from test/stub/ (see stub/register.mjs): this is the real
 // source, imported as it is.
 import { fake, log } from "./stub/herdr.mjs";
-import MrReview, { enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines } from "../mods/mr-review/main.js";
+import MrReview, { enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines, mdInline, markDone } from "../mods/mr-review/main.js";
 
 // The app hands a command to every copy of a mod, whichever one it would really have picked,
 // so the copies have to sort among themselves who acts. __send delivers one; __only drops the
@@ -134,10 +134,20 @@ eq("关掉一个目录就只剩它自己", treeRows(TREE, new Set(["src/main/jav
 
 // --- 说明：GitLab 给的是 markdown，这里只认行首那几样 ---
 const MD = ["## 改了什么", "", "- [x] 已完成的事", "- [ ] 还没做", "  - 缩进的子项", "1. 第一条", "> 引用一句", "带 `代码` 和 [链接](http://a.b) 的句子", "", "```yaml", "key: value", "```", "| 列 | 二 |"].join("\n");
-eq("说明按行认得出结构", mdLines(MD).map((l) => l.kind), ["head", "gap", "check", "check", "li", "li", "quote", "p", "gap", "code", "code"]);
+// The last line of MD is a pipe line with no alignment row under it: a broken table, kept as text.
+eq("说明按行认得出结构", mdLines(MD).map((l) => l.kind), ["head", "gap", "check", "check", "li", "li", "quote", "p", "gap", "code", "p"]);
 eq("勾选项分得清做完没做", mdLines(MD).filter((l) => l.kind === "check").map((l) => l.done), [true, false]);
 eq("行内标记只留文字", mdLines(MD).find((l) => l.kind === "p").text, "带 代码 和 链接 http://a.b 的句子");
 eq("缩进过的子项记着层数", mdLines(MD).filter((l) => l.kind === "li").map((l) => [l.depth, l.text]), [[1, "- 缩进的子项"], [0, "1. 第一条"]]);
+
+// The description is the part most likely to be read, so what it loses matters: the table's
+// alignment row is not a paragraph, and an identifier inside backticks is not emphasis.
+eq("标题带着层数", mdLines("# 一\n## 二").map((l) => [l.kind, l.level]), [["head", 1], ["head", 2]]);
+eq("表格整块认出来，分隔行和横线都不算正文", mdLines("| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---").map((l) => l.kind), ["table", "gap", "rule"]);
+eq("表格按格子切开，转义的竖线留在文字里", mdLines("| a | b |\n| --- | --- |\n| 1 | x\\|y |")[0], { kind: "table", head: ["a", "b"], rows: [["1", "x|y"]] });
+eq("续行归到它上面那一项", mdLines("- 一条理由\n  接着一句").map((l) => [l.kind, l.text]), [["li", "- 一条理由\n接着一句"]]);
+eq("代码里的下划线不会被当成斜体", mdInline("集中到 `user_session_id` 与 `MAX_RETRY_COUNT`"), "集中到 user_session_id 与 MAX_RETRY_COUNT");
+eq("真的强调还是只留文字", mdInline("**校验** 插件提交的 _账号_ 口令"), "校验 插件提交的 账号 口令");
 
 // --- 打开一个评审：问什么、先摆什么 ---
 reset();
@@ -207,6 +217,16 @@ await settle();
 eq("点了确认才发 mr merge -y", globalThis.__calls.map((c) => c.args).filter((a) => a[1] === "merge"), [["mr", "merge", "3", "-R", PROJECT, "-y"]]);
 eq("动手也走同一台机器", globalThis.__calls.find((c) => c.args[1] === "merge").opts.on, "wsl");
 eq("领完就把这份活清掉", pending(), null);
+// merge -y 碰上还在跑的流水线只是设成"通过后自动合并"，MR 还是开着的，行不能删
+eq("还没真的合上就不动列表", globalThis.__shared["mr-review.done"], undefined);
+
+// 真的合上了：列表立刻知道，不用等它下一次轮询
+diffState.meta = meta({ state: "merged" });
+p.ask("merge");
+globalThis.__send("confirm");
+await settle();
+eq("真合上了就立刻告诉列表", Object.keys(globalThis.__shared["mr-review.done"] ?? {}), [`${PROJECT}!3`]);
+diffState.meta = meta();
 
 // --- 几个副本同时醒来也只有一个动手 ---
 reset();
@@ -231,6 +251,7 @@ eq("关闭另说一句", [globalThis.__overlays[0].props.title, globalThis.__ove
 globalThis.__send("mr-review.confirm");
 await settle();
 eq("关闭发 mr close（没有 -y）", globalThis.__calls.map((x) => x.args).filter((a) => a[0] === "mr"), [["mr", "close", "3", "-R", PROJECT]]);
+eq("关闭也立刻告诉列表", Object.keys(globalThis.__shared["mr-review.done"] ?? {}), [`${PROJECT}!3`]);
 
 // 过期没人领的活，不能凭一次按键再翻出来
 globalThis.__shared["mr-review.pending"] = { kind: "merge", iid: "3", path: PROJECT, at: Date.now() - 600000 };
@@ -250,10 +271,29 @@ g.ask("merge");
 globalThis.__send("confirm");
 await settle();
 eq("失败时把 glab 的话剥干净", g.note, "合并没做成：405 Method Not Allowed");
+eq("合并没做成就什么都不写", globalThis.__shared["mr-review.done"], undefined);
+
+// 关不掉的时候也是一样：行得留在列表上
+diffState.fail = true;
+reset();
+globalThis.__only();
+const g2 = new MrReview();
+g2.init({}, cx);
+await settle();
+g2.ask("close");
+globalThis.__send("mr-review.confirm");
+await settle();
+eq("关闭失败也把行留着", globalThis.__shared["mr-review.done"], undefined);
+diffState.fail = false;
 eq("失败后不 busy，也刷新过了", [g.busy, g.meta.title], [false, "编辑install_c3i_nacos.sql"]);
 diffState.fail = false;
 
-// --- 视图选择放在 shared 里：第二个评审 tab 打开就是同一个样子 ---
+// 写出去的是一张会自己缩小的表：新的进去，太旧的出来，不然它只会越来越长
+globalThis.__shared["mr-review.done"] = { "old/one!1": Date.now() - 20 * 60e3, "old/two!2": Date.now() - 60e3 };
+const kept = markDone("acme/x", 7);
+eq("新的一条进去，太旧的出来", Object.keys(kept), ["acme/x!7", "old/two!2"]);
+
+// --- 视图选择放在 shared 里：第二个 review tab 打开就是同一个样子 ---
 reset();
 globalThis.__only();
 globalThis.__props = { iid: "3", path: PROJECT, on: "wsl" };

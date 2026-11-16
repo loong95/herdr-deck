@@ -20,16 +20,30 @@ const CLAIM = 120000;
 const MAXFILES = 1000; // the cap the built-in Changes panel uses
 const MAXROWS = 1500;
 const MAXLINE = 4000;
-const DESC = 200; // how much of the description fits before it has to be scrolled
 
 // The payload key the confirmation hands back through, and the view choices: kept in
 // shared state rather than localStorage because localStorage belongs to one copy, and a
 // second review tab should open the way the first one was left.
 const PENDING = "mr-review.pending";
+// What a merge or a close leaves for the list to read: `path!iid` -> when it happened.
+const DONE = "mr-review.done";
+const DONE_KEEP = 15 * 60e3;
 const VIEW = "mr-review.view";
 const DEFAULTS = { files: "flat", diff: "unified", desc: false };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// The list reads this: an MR that was merged or closed here is off it before glab is asked
+// again, because a row that is already decided should not sit there for another poll.
+export function markDone(path, iid, now = Date.now()) {
+  const old = shared(DONE) ?? {};
+  const next = { [`${path}!${iid}`]: now };
+  for (const [k, at] of Object.entries(old)) {
+    if (now - Number(at) < DONE_KEEP) next[k] = at;
+  }
+  setShared(DONE, next);
+  return next;
+}
 
 // GitLab's own verdict on whether the MR can go in, said shortly.
 const STATUS = {
@@ -167,34 +181,106 @@ export function treeRows(files, folded) {
   return out;
 }
 
+// One line of markdown with the markup taken off, keeping what it said.
+export function mdInline(s) {
+  // A code span keeps its text exactly, so it is set aside before anything is stripped —
+  // set aside rather than split out, because emphasis runs across one: **不进 `a` / `b`**
+  // is bold around two code spans, and cutting the line at them left the stars behind.
+  const spans = [];
+  const masked = String(s).replace(/`([^`]*)`/g, (_a, one) => {
+    spans.push(one);
+    return `\u0000${spans.length - 1}\u0000`;
+  });
+  const strip = masked
+    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, (_a, one, two) => (one ? `${one} ${two}` : two))
+    .replace(/\*\*\*([^*]+)\*\*\*/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|[^\w*])\*([^*]+)\*(?=[^\w*]|$)/g, "$1$2")
+    .replace(/(^|[^\w])__([^_]+)__(?=[^\w]|$)/g, "$1$2")
+    // A single `_` only counts at the edge of a word: user_session_id is one name, and pairing
+    // its underscores off turned every snake_case identifier into a new word.
+    .replace(/(^|[^\w])_([^_]+)_(?=[^\w]|$)/g, "$1$2");
+  return strip.replace(/\u0000(\d+)\u0000/g, (_a, i) => spans[Number(i)]).replace(/\s+$/, "");
+}
+
+// A table row as its cells, pipes off. A pipe written \\| is part of the text — the JSON in
+// one of these cells has them — and not a column break.
+export function cellsOf(line) {
+  const body = String(line).trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells = [];
+  let at = "";
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === "\\" && body[i + 1] === "|") { at += "|"; i++; continue; }
+    if (body[i] === "|") { cells.push(at); at = ""; continue; }
+    at += body[i];
+  }
+  cells.push(at);
+  return cells.map((c) => mdInline(c.trim()));
+}
+
+// The row of dashes under a table's header: the one thing that makes it a table.
+const isAlignRow = (line) => /^\s*\|([\s:|-]+)\|\s*$/.test(line);
+const isTableRow = (line) => /^\s*\|/.test(line);
+
 // GitLab hands the description back as markdown and there is no text engine here, so
 // this reads the line starts a review actually needs and drops the markup inside a line.
 export function mdLines(text) {
-  const inline = (s) => s
-    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, (_a, one, two) => (one ? `${one} ${two}` : two))
-    .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, "$1")
-    .replace(/`([^`]*)`/g, "$1")
-    .replace(/\s+$/, "");
+  const inline = mdInline;
   const out = [];
+  const src = String(text).replace(/\r\n/g, "\n").split("\n");
   let code = false;
-  for (const raw of String(text).replace(/\r\n/g, "\n").split("\n")) {
+  for (let n = 0; n < src.length; n++) {
+    const raw = src[n];
     if (/^\s*(```|~~~)/.test(raw)) { code = !code; continue; }
     const line = raw.replace(/\s+$/, "");
     if (code) { out.push({ kind: "code", text: untab(line.replace(/^\s{0,4}/, "")) }); continue; }
     if (!line.trim()) { out.push({ kind: "gap", text: "" }); continue; }
     const head = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (head) { out.push({ kind: "head", text: inline(head[2]) }); continue; }
+    if (head) { out.push({ kind: "head", level: head[1].length, text: inline(head[2]) }); continue; }
     const check = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
     if (check) { out.push({ kind: "check", done: check[1] !== " ", text: inline(check[2]), depth: Math.floor((line.length - line.trimStart().length) / 2) }); continue; }
     const bullet = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
     if (bullet) { out.push({ kind: "li", text: inline(`${bullet[2]} ${bullet[3]}`), depth: Math.floor(bullet[1].length / 2) }); continue; }
     if (/^\s*>/.test(line)) { out.push({ kind: "quote", text: inline(line.replace(/^\s*>\s?/, "")) }); continue; }
-    if (/^\s*\|/.test(line) && !/^\s*\|[\s:|-]+\|\s*$/.test(line)) { out.push({ kind: "code", text: inline(line) }); continue; }
+    // A rule is a line, and a table is a table: its pipes are plumbing, not text, so the
+    // rows become cells here and the alignment row goes away. Collected as one row, because
+    // a header is only a header next to its columns.
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push({ kind: "rule" }); continue; }
+    if (isTableRow(line)) {
+      const next = (src[n + 1] ?? "").replace(/\s+$/, "");
+      if (isAlignRow(next)) {
+        const head = cellsOf(line);
+        const rows = [];
+        for (n++; n + 1 < src.length;) {
+          const row = src[n + 1].replace(/\s+$/, "");
+          if (!isTableRow(row)) break;
+          n++;
+          if (!isAlignRow(row)) rows.push(cellsOf(row));
+        }
+        out.push({ kind: "table", head, rows });
+        continue;
+      }
+      // A stray line that only starts with a pipe (a shell pipe, say) is still just text.
+      out.push({ kind: "p", text: inline(line) });
+      continue;
+    }
+    // A line set in under a bullet, a checkbox or a quote is that item's next line, not a
+    // paragraph of its own: markdown's soft wrap, written out by hand.
+    const cont = /^\s{2,}(\S.*)$/.exec(line);
+    const prev = out[out.length - 1];
+    if (cont && prev && (prev.kind === "li" || prev.kind === "check" || prev.kind === "quote")) {
+      prev.text = `${prev.text}\n${inline(cont[1])}`;
+      continue;
+    }
     out.push({ kind: "p", text: inline(line) });
   }
   while (out.length && out[out.length - 1].kind === "gap") out.pop();
   return out;
 }
+
+// A row whose text carries more than one source line (a wrapped bullet) keeps those
+// breaks: one child per line, instead of one long line with the wrap lost.
+const textLines = (s) => String(s).split("\n").map((line) => div().child(line));
 
 const countKind = (diff, sign) => diff.split("\n").filter((l) => l.startsWith(sign)).length;
 
@@ -312,8 +398,10 @@ export default class MrReview extends View {
     setShared(VIEW, next);
   }
 
-  load(cx) {
-    if (!this.iid || !this.path || this.loading || this.busy) return;
+  // `after` runs once this load's answer is in — or at once, when there was nothing to ask:
+  // act() uses it to judge the merge by the MR as glab reports it afterwards.
+  load(cx, after) {
+    if (!this.iid || !this.path || this.loading || this.busy) { after?.(); return; }
     this.loading = true;
     const project = `${enc(this.path)}/merge_requests/${this.iid}`;
     cx.spawn(async (cx) => {
@@ -335,6 +423,7 @@ export default class MrReview extends View {
         this.error = say(e);
       } finally {
         this.loading = false;
+        after?.();
         cx.notify();
       }
     });
@@ -433,12 +522,22 @@ export default class MrReview extends View {
     });
   }
 
+  // Told to the list now rather than at its next poll — but only once the MR as glab reports
+  // it says it really left the open list: `merge -y` on an MR whose pipeline is still running
+  // only sets it to merge when that pipeline passes, and a row dropped there would be back
+  // at the next poll.
+  markDone(job, merge) {
+    if (merge && this.meta?.state === "opened") return null;
+    return markDone(job.path, job.iid);
+  }
+
   act(job, cx) {
     const merge = job.kind === "merge";
     // -y only skips glab's own "submit?" prompt, which the dialog above has just answered.
     const args = ["mr", merge ? "merge" : "close", String(job.iid), "-R", String(job.path), ...(merge ? ["-y"] : [])];
     this.busy = true;
     this.note = "";
+    let done = false;
     cx.spawn(async (cx) => {
       try {
         const r = await exec("glab", args, { on: job.on ?? null, timeout: ACTION_TIMEOUT });
@@ -446,12 +545,14 @@ export default class MrReview extends View {
         this.note = merge ? "已提交合并。" : "已关闭 MR。";
         this.noteBad = false;
         this.raw = null;
+        done = true;
       } catch (e) {
         this.note = `${merge ? "合并" : "关闭"}没做成：${say(e)}`;
         this.noteBad = true;
       } finally {
         this.busy = false;
-        this.load(cx);
+        // Only a command glab accepted can have moved the MR: a failure keeps the row.
+        this.load(cx, () => { if (done) this.markDone(job, merge); });
         cx.notify();
       }
     });
@@ -523,31 +624,88 @@ export default class MrReview extends View {
 
   descPane(t) {
     const id = "mr-desc";
-    // The same shape as the file list: a box of its own with the list absolutely inside
-    // it. A long description inside a row-sized column instead paints over the header
-    // and the lists, because the row never clips it.
-    return div().id("mr-desc-box").flex_none().w_full().h(DESC + 12).relative().border_b(1).border_color(t.border)
+    // The same shape as the file list: a box of its own with the list absolutely inside it.
+    // A long description inside a row-sized column instead paints over the header and the
+    // lists, because the row never clips it. It fills what the window has: open, the
+    // description is what is being read, and the diff is a collapse away.
+    return div().id("mr-desc-box").flex_1().w_full().min_h(0).relative().border_b(1).border_color(t.border)
       .child(v_flex().id(id).absolute().inset_0().overflow_y_scroll().px(12).py(8).gap(2)
-        .children(this.desc.map((l, i) => this.mdRow(t, l, i))))
+        .children(this.mdBlocks(t)))
       .child(Scrollbar.vertical(id).absolute().inset_0());
+  }
+
+  // A run of lines of one kind is one thing on screen: a fenced block is a block with a
+  // line per row, a quote keeps a single bar down its side, and a paragraph stays together.
+  // Drawing them line by line gave every code line a rounded box of its own, which read as
+  // a stack of chips rather than as code, and left the quote's bar broken between lines.
+  mdBlocks(t) {
+    const rows = this.desc;
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const run = [row];
+      while (["code", "quote", "p"].includes(row.kind) && rows[i + 1]?.kind === row.kind) run.push(rows[++i]);
+      if (row.kind === "code") {
+        out.push(v_flex().id(`d-${i}`).w_full().flex_none().px(8).py(6).rounded(5).bg(t.raised).gap(1)
+          .font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.muted)
+          .children(run.map((l) => div().child(l.text || " "))));
+      } else if (row.kind === "quote") {
+        out.push(v_flex().id(`d-${i}`).w_full().flex_none().pl(8).py(1)
+          .border_l(2).border_color(t.border).text_color(t.muted)
+          .children(run.map((l) => div().child(l.text))));
+      } else if (row.kind === "p") {
+        out.push(v_flex().id(`d-${i}`).w_full().flex_none().children(run.map((l) => div().child(l.text))));
+      } else if (row.kind === "rule") {
+        out.push(div().id(`d-${i}`).w_full().flex_none().h(1).my(3).bg(t.border));
+      } else if (row.kind === "table") {
+        out.push(this.tableBox(t, row, i));
+      } else {
+        out.push(this.mdRow(t, row, i));
+      }
+    }
+    return out;
+  }
+
+  // A table as a grid: a header row over a rule, then a row per line, the cells sharing
+  // the width. Its pipes used to be drawn as monospace text, which read as one long code
+  // line that wrapped wherever it liked.
+  tableBox(t, l, i) {
+    const all = [l.head, ...l.rows];
+    const cols = Math.max(...all.map((r) => r.length));
+    // A column is as wide as what is in it, capped: a table of a name and a sentence reads
+    // as 1:4 rather than 1:1, and one enormous cell cannot take the whole row.
+    const grow = Array.from({ length: cols }, (_, k) =>
+      Math.min(40, Math.max(4, ...all.map((r) => String(r[k] ?? "").length))));
+    const cell = (text, k, head) => div().min_w(0).px(6).py(3)
+      .flex_basis(0).flex_grow(grow[k]).flex_shrink(1)
+      .text_color(head ? t.foreground : t.muted)
+      .when(head, (e) => e.font_semibold())
+      .child(String(text ?? ""));
+    const line = (cells, head) => h_flex().w_full().items_start()
+      .when(head, (e) => e.bg(t.raised))
+      .children(Array.from({ length: cols }, (_, k) => cell(cells[k], k, head)));
+    return v_flex().id(`d-${i}`).w_full().flex_none().rounded(5).overflow_hidden()
+      .children([line(l.head, true), div().w_full().flex_none().h(1).bg(t.border), ...l.rows.map((r) => line(r, false))]);
   }
 
   mdRow(t, l, i) {
     const pad = 12 * (l.depth ?? 0);
     if (l.kind === "gap") return div().id(`d-${i}`).h(6).flex_none();
-    if (l.kind === "head") return div().id(`d-${i}`).w_full().flex_none().text_size(13).font_semibold().child(l.text);
-    if (l.kind === "code") {
-      return div().id(`d-${i}`).w_full().flex_none().ml(pad).px(8).py(2).rounded(5).bg(t.raised)
-        .font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.muted).child(l.text || " ");
+    // A heading is a size as well as a weight: h1 and h2 have to read as breaks in a long
+    // description, h3 and deeper as a label on what follows.
+    if (l.kind === "head") {
+      const size = l.level === 1 ? 15 : l.level === 2 ? 13.5 : 12.5;
+      return div().id(`d-${i}`).w_full().flex_none().text_size(size).font_semibold().child(l.text);
     }
-    if (l.kind === "quote") return div().id(`d-${i}`).w_full().flex_none().ml(pad).pl(8).border_l(2).border_color(t.border).text_color(t.muted).child(l.text);
     if (l.kind === "check") {
       return h_flex().id(`d-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
         .child(div().w(14).flex_none().text_color(l.done ? t.done : t.dim).child(l.done ? "☑" : "☐"))
-        .child(div().flex_1().min_w(0).text_color(l.done ? t.muted : t.foreground).child(l.text));
+        .child(v_flex().flex_1().min_w(0).text_color(l.done ? t.muted : t.foreground)
+          .children(textLines(l.text)));
     }
     if (l.kind === "li") return h_flex().id(`d-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
-      .child(div().w(8).flex_none().text_color(t.dim).child("·")).child(div().flex_1().min_w(0).child(l.text));
+      .child(div().w(8).flex_none().text_color(t.dim).child("·"))
+      .child(v_flex().flex_1().min_w(0).children(textLines(l.text)));
     return div().id(`d-${i}`).w_full().flex_none().ml(pad).child(l.text);
   }
 
@@ -649,11 +807,14 @@ export default class MrReview extends View {
     if (!this.iid || !this.path) {
       return box.child(div().flex_1().items_center().justify_center().text_color(t.dim).child("从 MR 列表点一行打开一个评审"));
     }
+    // Open, the description has the window to itself: reading it is what the reader is doing,
+    // and the files and the diff come back the moment it is collapsed.
+    const reading = Boolean(this.view("desc")) && Boolean(this.desc.length);
     return box
       .child(this.head(t))
-      .when(Boolean(this.view("desc")) && Boolean(this.desc.length), (e) => e.child(this.descPane(t)))
+      .when(reading, (e) => e.child(this.descPane(t)))
       .when(Boolean(this.error), (e) => e.child(div().px(10).py(6).text_size(11).text_color(t.blocked).child(this.error)))
-      .when(!this.error, (e) => e.child(h_flex().flex_1().min_h(0).children([this.filesPane(t), this.diffPane(t)])))
+      .when(!this.error && !reading, (e) => e.child(h_flex().flex_1().min_h(0).children([this.filesPane(t), this.diffPane(t)])))
       .when(Boolean(this.note), (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border)
         .child(div().flex_1().min_w(0).text_size(11).text_color(this.noteBad ? t.blocked : t.done).child(this.note))
         .when(this.busy, (b) => b.child(div().text_size(11).text_color(t.dim).frames(SPINNER, 90)))

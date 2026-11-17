@@ -5,7 +5,11 @@
 // The modules the mod imports come from test/stub/ (see stub/register.mjs): this is the real
 // source, imported as it is.
 import { fake, log } from "./stub/herdr.mjs";
-import MrReview, { enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines, mdInline, markDone } from "../mods/mr-review/main.js";
+import { byId, textOf } from "./stub/element.mjs";
+import MrReview, {
+  enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines, mdInline, markDone,
+  pipelineOf, talkRows,
+} from "../mods/mr-review/main.js";
 
 // The app hands a command to every copy of a mod, whichever one it would really have picked,
 // so the copies have to sort among themselves who acts. __send delivers one; __only drops the
@@ -52,22 +56,34 @@ const RAW = [
   "",
 ].join("\n");
 
-let diffState = { meta: meta(), files: [oneDiff()], fail: false };
+// What glab answers for the two extras. Empty by default: a review of an MR nobody has
+// commented on and whose project runs no pipeline is the ordinary case.
+let diffState = { meta: meta(), files: [oneDiff()], fail: false, pipes: [], talk: [] };
 globalThis.__calls = [];
 globalThis.__runs = [];
 globalThis.__overlays = [];
 globalThis.__shared = {};
 globalThis.__props = {};
+globalThis.__opened = [];
 globalThis.__reply = async (cmd, args) => {
   const ep = String(args.at(-1));
-  if (args[0] === "api") return { code: 0, stdout: JSON.stringify(ep.includes("/diffs") ? diffState.files : diffState.meta), stderr: "" };
+  if (args[0] === "api") {
+    if (diffState.extraFail && (ep.includes("/pipelines") || ep.includes("/discussions"))) {
+      return { code: 1, stdout: "", stderr: "  ERROR  \n  glab: 404 Not Found (HTTP 404)\n" };
+    }
+    const body = ep.includes("/diffs") ? diffState.files
+      : ep.includes("/pipelines") ? diffState.pipes
+      : ep.includes("/discussions") ? diffState.talk
+      : diffState.meta;
+    return { code: 0, stdout: JSON.stringify(body ?? null), stderr: "" };
+  }
   if (args[1] === "diff") return { code: 0, stdout: RAW, stderr: "" };
   if (args[0] === "mr") return diffState.fail
     ? { code: 1, stdout: "", stderr: "  ERROR  \n  glab: 405 Method Not Allowed (HTTP 405)\n  Try --help for usage.\n" }
     : { code: 0, stdout: "", stderr: "" };
   return { code: 0, stdout: "", stderr: "" };
 };
-const reset = () => { globalThis.__calls = []; globalThis.__overlays = []; globalThis.__shared = {}; };
+const reset = () => { globalThis.__calls = []; globalThis.__overlays = []; globalThis.__shared = {}; globalThis.__opened = []; };
 const asked = (want) => globalThis.__calls.map((c) => c.args).filter((a) => want.every((x, i) => a[i] === x)).length;
 const settle = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,6 +92,8 @@ const cx = {
   focus_handle: () => ({}),
   spawn: (fn) => fn(cx),
   timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms); return {}; } },
+  // App::open_url, as a click handler is handed it: the pipeline chip's way into GitLab.
+  open_url: (url) => globalThis.__opened.push(url),
 };
 
 const fails = [];
@@ -109,6 +127,39 @@ eq("暗底子上差异色要压得更实", [
   tint({ background: "#0d1117", foreground: "#e6edf3" }),
   tint({ background: "#f6f8fa", foreground: "#1f2328" }),
 ], ["3a", "18"]);
+
+// --- 流水线：最新的一条，和它的入口 ---
+const PIPE = (over = {}) => ({
+  id: 91, status: "success", sha: "0123456789abcdef", ref: "author-patch",
+  updated_at: new Date(Date.now() - 5 * 60e3).toISOString(),
+  web_url: "https://gitlab.example.com/x/-/pipelines/91", ...over,
+});
+eq("流水线取最新的一条", [pipelineOf([PIPE(), PIPE({ id: 90, status: "failed" })]).id, pipelineOf([PIPE()]).status], [91, "success"]);
+eq("流水线的状态说成人话", [
+  pipelineOf([PIPE({ status: "failed" })]).label,
+  pipelineOf([PIPE({ status: "running" })]).label,
+  pipelineOf([PIPE({ status: "manual" })]).label,
+  pipelineOf([PIPE({ status: "waiting_for_resource" })]).label,
+], ["流水线失败", "流水线在跑", "流水线待手动", "流水线等资源"]);
+eq("通过和失败用的不是同一个颜色位", [pipelineOf([PIPE()]).tone, pipelineOf([PIPE({ status: "failed" })]).tone], ["done", "blocked"]);
+eq("没跑过流水线就什么都不说", [pipelineOf([]), pipelineOf(null)], [null, null]);
+eq("不认识的状也照样说出来，总比留一片空白好", pipelineOf([PIPE({ status: "wibble" })]).label, "流水线 wibble");
+
+// --- 讨论：一条评论一行，回复跟在自己那句下面，系统事件单独标出来 ---
+const at = (min) => new Date(Date.now() - min * 60e3).toISOString();
+const NOTE = (over = {}) => ({ id: 1, body: "一句", author: { name: "Ann" }, created_at: at(60), ...over });
+const TALKS = [
+  { notes: [NOTE({ id: 1, body: "第一句", created_at: at(50) }), NOTE({ id: 2, body: "回一句", author: { username: "bob" }, created_at: at(40) })] },
+  { notes: [NOTE({ id: 3, system: true, body: "changed the description", created_at: at(30) })] },
+  { notes: [NOTE({ id: 4, body: "这一行有问题", created_at: at(20), resolvable: true, resolved: false, position: { new_path: "a/b.sql", new_line: 12 } })] },
+];
+eq("按说话的先后排，回复在哪句之后", talkRows(TALKS).map((n) => n.id), ["n1", "n2", "n3", "n4"]);
+eq("系统事件标出来，正文压成一行", (({ system, plain }) => ({ system, plain }))(talkRows(TALKS)[2]), { system: true, plain: "changed the description" });
+eq("没写名字就用账号", talkRows(TALKS)[1].who, "bob");
+eq("讨论挂在哪一行", talkRows(TALKS)[3].where, "a/b.sql:12");
+eq("能解决的说明解决到哪一步", talkRows(TALKS).map((n) => n.resolved), [null, null, null, false]);
+eq("评论的正文按 markdown 认过", talkRows(TALKS)[0].body, [{ kind: "p", text: "第一句" }]);
+eq("没有讨论就没有行", [talkRows(null), talkRows([{ notes: [] }])], [[], []]);
 
 // --- 并排：删的一串和加的一串对起来读，短的那边留空 ---
 const SPLIT = ["@@ -1,4 +1,5 @@", " keep", "-a", "-b", "+x", "+y", "+z", " tail"];
@@ -156,10 +207,12 @@ globalThis.__props = { iid: "3", path: PROJECT, on: "wsl" };
 const r = new MrReview();
 r.init({}, cx);
 await settle();
-eq("问的是 space 那台机器上的 glab", globalThis.__calls.map((c) => c.opts.on), ["wsl", "wsl"]);
-eq("开一次问两样", globalThis.__calls.map((c) => c.args.at(-1)), [
+eq("问的是 space 那台机器上的 glab", globalThis.__calls.map((c) => c.opts.on), ["wsl", "wsl", "wsl", "wsl"]);
+eq("开一次问四样：MR、文件、流水线、讨论", globalThis.__calls.map((c) => c.args.at(-1)), [
   `projects/${enc(PROJECT)}/merge_requests/3`,
   `projects/${enc(PROJECT)}/merge_requests/3/diffs?per_page=100`,
+  `projects/${enc(PROJECT)}/merge_requests/3/pipelines?per_page=5`,
+  `projects/${enc(PROJECT)}/merge_requests/3/discussions?per_page=100`,
 ]);
 eq("文件多也拿得全：diffs 用 --paginate", globalThis.__calls[1].args, ["api", "--paginate", `projects/${enc(PROJECT)}/merge_requests/3/diffs?per_page=100`]);
 eq("第一个文件的差异先摆出来，跟 Changes 一样", r.open, SQL);
@@ -180,6 +233,25 @@ diffState.meta = meta({ detailed_merge_status: "conflict" });
 r.load(cx); await settle();
 eq("有冲突时不能合并", r.verdict().canMerge, false);
 eq("有冲突时仍然可以关闭", r.verdict().live, true);
+
+// 这台 GitLab 用 need_rebase 说"合并被阻止：快进合并不成立"。以前这张表里没有它，状态那格
+// 是空白、合并按钮还亮着 —— 看着像能合，点了才被 glab 拒。
+diffState.meta = meta({ detailed_merge_status: "need_rebase" });
+r.load(cx); await settle();
+eq("要 rebase 的时候说得出来", [r.verdict().status, r.verdict().canMerge], ["需先 rebase", false]);
+const blocked = r.render();
+eq("合并按钮还在，但不给点", [textOf(byId(blocked, "merge-mr")), byId(blocked, "merge-mr")._a.tooltip.includes("需先 rebase")], ["合并", true]);
+diffState.meta = meta({ detailed_merge_status: "commits_status" });
+r.load(cx); await settle();
+eq("提交不齐也不给合", [r.verdict().status, r.verdict().canMerge], ["提交不齐", false]);
+diffState.meta = meta({ detailed_merge_status: "something_new" });
+r.load(cx); await settle();
+eq("没见过的判断照样说出来，也留给 glab 去拒绝", [r.verdict().status, r.verdict().canMerge], ["something_new", true]);
+diffState.meta = meta({ detailed_merge_status: "draft_status", draft: true });
+r.load(cx); await settle();
+eq("草稿是悄悄说的不，也不给合", [r.verdict().status, r.verdict().canMerge], ["草稿", false]);
+diffState.meta = meta();
+r.load(cx); await settle();
 diffState.meta = meta({ state: "merged", detailed_merge_status: "not_open" });
 r.load(cx); await settle();
 eq("已经合上了，两个按钮都不给点", [r.verdict().live, r.verdict().canMerge], [false, false]);
@@ -198,7 +270,83 @@ eq("整份补丁里的 hunk 摆出来了", f2.rows.filter((x) => x.kind === "+")
 reset();
 await f2.show(SQL);
 eq("整份补丁只取一次", globalThis.__calls.length, 0);
+
+// 刷新是问 GitLab"现在"是什么样，整份补丁也在其中：缓存跨过一次次刷新的话，折起来的那个
+// 文件会一直显示打开 tab 那天的差异。
+reset();
+globalThis.__only();
+diffState.files = [oneDiff({ collapsed: true, diff: "" })];
+const fresh = new MrReview();
+fresh.init({}, cx);
+await settle();
+reset();
+fresh.load(cx);
+await settle();
+eq("刷新会重新问一次整份补丁", globalThis.__calls.map((c) => c.args).filter((a) => a[1] === "diff").length, 1);
+
+// 一次还没问完又点了一次刷新：记下这一次，落定后再问，而不是让点击石沉大海
+const before = globalThis.__calls.length;
+fresh.loading = true;
+fresh.load(cx);
+eq("正在问的时候再点，记下来，但不再发一次", [fresh.again, globalThis.__calls.length], [true, before]);
+fresh.loading = false;
+fresh.again = false;
+fresh.busy = true;
+fresh.load(cx);
+eq("正在合并的时候不排队", fresh.again, false);
+fresh.busy = false;
 diffState.files = [oneDiff()];
+
+// --- 流水线和讨论：head 上多一个格子，右边多一列 ---
+reset();
+globalThis.__only();
+diffState.pipes = [PIPE({ status: "failed" })];
+diffState.talk = TALKS;
+const ci = new MrReview();
+ci.init({}, cx);
+await settle();
+eq("流水线失败就写在 GitLab 的判断旁边", textOf(byId(ci.render(), "mr-ci")), "流水线失败");
+byId(ci.render(), "mr-ci")._h.on_click({}, cx);
+eq("点它开的是那条流水线的页面", globalThis.__opened, [PIPE().web_url]);
+eq("按钮上的数只数人说的", [ci.talk.filter((n) => !n.system).length, textOf(byId(ci.render(), "show-talk"))], [3, "讨论 3"]);
+eq("没展开就还没有讨论这一列", byId(ci.render(), "mr-talk-3"), null);
+// 说明是整窗读的，点了讨论就得从说明里出来，不然那一列开在看不见的地方
+ci.setView("desc", true);
+byId(ci.render(), "show-talk")._h.on_click({}, cx);
+eq("开讨论就把说明收起", ci.view("desc"), false);
+const pane = ci.render();
+eq("展开后讨论成了一列", Boolean(byId(pane, "mr-talk-3")), true);
+eq("评论和系统事件都在列里", [Boolean(byId(pane, "talk-n1")), Boolean(byId(pane, "talk-n3"))], [true, true]);
+eq("评论的正文画出来了", textOf(byId(pane, "talk-n1")).includes("第一句"), true);
+eq("列头说的是人说的那几条", textOf(byId(pane, "mr-talk-3")).includes("讨论 3 条"), true);
+byId(pane, "talk-close")._h.on_click({}, cx);
+eq("收起来就只剩文件和差异", byId(ci.render(), "mr-talk-3"), null);
+diffState.pipes = [];
+diffState.talk = [];
+
+// 这两样是附带的：GitLab 上问不出来，也不能把差异一起带走
+reset();
+globalThis.__only();
+diffState.extraFail = true;
+const soft = new MrReview();
+soft.init({}, cx);
+await settle();
+eq("附带的两样问不出来，差异照样在", [soft.error, soft.files.length, soft.ci, soft.talk.length], ["", 1, null, 0]);
+
+// 再问一次没答上来，就留着上一次的：显示的是旧消息，也好过一片空白
+diffState.extraFail = false;
+diffState.pipes = [PIPE({ status: "failed" })];
+diffState.talk = TALKS;
+const stale = new MrReview();
+stale.init({}, cx);
+await settle();
+diffState.extraFail = true;
+stale.load(cx);
+await settle();
+eq("答不上来的那一次不清掉上一次的流水线和讨论", [stale.ci?.status, stale.talk.length], ["failed", 4]);
+diffState.extraFail = false;
+diffState.pipes = [];
+diffState.talk = [];
 
 // --- 二次确认：先弹内置 dialog，点了确认才动手 ---
 reset();

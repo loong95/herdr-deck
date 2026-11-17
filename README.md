@@ -285,8 +285,13 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
   CI status is not shown: this GitLab leaves `pipeline` out of both list endpoints,
   so the verdict is `detailed_merge_status`.
 - **mr-review** — changed files on the left, their diff on the right, merge and close
-  along the top. Everything comes from the API: the repo does not have to be on
-  this machine, and nothing is written into a local `.git`.
+  along the top. GitLab's verdict is spelled out (`需先 rebase`, `有冲突`, `待批准`…) and a
+  merge it refuses is a button that will not press, with the reason on its tooltip. Beside
+  it sits the newest pipeline (`流水线通过` / `流水线失败`, a click away from its jobs), and
+  a `讨论` button opens the MR's comments
+  as a third column, so a note about a file is read with that file on screen. Everything
+  comes from the API: the repo does not have to be on this machine, and nothing is
+  written into a local `.git`.
 - **board** — two views of what the whole window is doing, from Herdr's own `agents()` and
   `spaces()`: **Needs you** lists every agent that is blocked (and opens its terminal), and
   **Overview** draws every open tab as a card, grouped by status or by workspace, with how long
@@ -310,7 +315,7 @@ Four harnesses, and none of them needs Herdr:
 | Test | Checks |
 |---|---|
 | `test/rail.test.mjs` | the rail and the MR panel against one fake layout document, so what is checked is the protocol between them: who is showing, badges, hide and show |
-| `test/mr-review.test.mjs` | what the review asks `glab` for, the file list it builds, what a confirmed dialog finally runs — no GitLab is ever touched |
+| `test/mr-review.test.mjs` | what the review asks `glab` for, the file list it builds, the comments and the pipeline it draws, what a confirmed dialog finally runs — no GitLab is ever touched |
 | `test/pi-sessions.test.mjs` | a real temp sessions tree, and mostly call counts, because the point of the panel is what it does *not* read |
 | `test/board.test.mjs` | the board's names, groups and counts, and the rail rows that open it |
 | `test/blocks.test.mjs` | the markdown splitter pi-gui draws code boxes and tables from (pure: bare node) |

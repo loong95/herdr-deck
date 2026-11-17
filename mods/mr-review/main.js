@@ -45,23 +45,104 @@ export function markDone(path, iid, now = Date.now()) {
   return next;
 }
 
-// GitLab's own verdict on whether the MR can go in, said shortly.
+// GitLab's own verdict on whether the MR can go in, said shortly. Every value the API
+// documents is here: `need_rebase` and `commits_status` are what this instance hands out for
+// "合并被阻止：快进合并不成立" and a missing commit, and a verdict that is not in this table
+// reads as the raw value with no colour rather than as nothing at all.
 const STATUS = {
   mergeable: ["可合并", "done"],
   approvals_satisfied: ["已批准", "done"],
   conflict: ["有冲突", "blocked"],
+  need_rebase: ["需先 rebase", "blocked"],
+  commits_status: ["提交不齐", "blocked"],
   detached: ["落后于目标分支", "blocked"],
   ci_must_pass: ["流水线在跑", "working"],
+  ci_still_running: ["流水线在跑", "working"],
   ci_stopped: ["流水线停了", "blocked"],
   approvals_blocked: ["待批准", "working"],
+  not_approved: ["待批准", "working"],
+  blocked_status: ["被别的 MR 挡住", "blocked"],
+  discussions_not_resolved: ["讨论未解决", "blocked"],
+  requested_changes: ["要求修改", "blocked"],
+  status_checks_must_pass: ["外部检查未过", "blocked"],
+  locked_paths: ["文件被锁", "blocked"],
+  security_policy_violations: ["安全策略不允许", "blocked"],
+  title_regex: ["标题不合规", "blocked"],
+  jira_association_missing: ["缺 Jira 关联", "blocked"],
+  merge_time: ["不在允许合并的时段", "blocked"],
+  branch_missing: ["源分支不见了", "blocked"],
+  approvals_syncing: ["批准同步中", "dim"],
   draft_status: ["草稿", "dim"],
   unchecked: ["检查中", "dim"],
   checking: ["检查中", "dim"],
   not_open: ["已不在评审中", "dim"],
 };
 
-// Things GitLab will not merge no matter what it says it is thinking about.
-const BLOCKED = ["conflict", "draft_status", "ci_stopped", "not_open"];
+// How many comments are drawn, newest kept: an MR argued over for a year has hundreds, and
+// a review tab that pages through them all on a 60 s poll is a lot of round trips for rows
+// nobody scrolls to.
+const MAXTALK = 300;
+
+// What the newest pipeline of this MR is doing. `detailed_merge_status` only says that CI
+// stands between the MR and the merge; this is the run itself, with the id that leads to it.
+const CI = {
+  success: ["流水线通过", "done"],
+  failed: ["流水线失败", "blocked"],
+  canceled: ["流水线已取消", "blocked"],
+  skipped: ["流水线已跳过", "dim"],
+  manual: ["流水线待手动", "working"],
+  running: ["流水线在跑", "working"],
+  pending: ["流水线排队", "working"],
+  preparing: ["流水线准备中", "working"],
+  waiting_for_resource: ["流水线等资源", "working"],
+  created: ["流水线排队", "dim"],
+  scheduled: ["流水线已排期", "dim"],
+};
+
+// The MR's pipelines, newest first as GitLab lists them: the first one is the run the
+// verdict is about, and a review does not have room for the history of it.
+export function pipelineOf(list) {
+  const p = (Array.isArray(list) ? list : []).find(Boolean);
+  if (!p) return null;
+  const [label, tone] = CI[p.status] ?? ["流水线 " + String(p.status ?? ""), "dim"];
+  return {
+    id: p.id ?? 0,
+    status: String(p.status ?? ""),
+    label,
+    tone,
+    sha: String(p.sha ?? "").slice(0, 8),
+    url: String(p.web_url ?? ""),
+    at: Date.parse(p.updated_at ?? p.created_at) || 0,
+  };
+}
+
+// One row per note, in the order the MR was talked about. A discussion's notes are read in
+// sequence, so a reply sits under the comment it answers; `resolved` and the file a thread
+// hangs on belong to the discussion, and are said again on each of its notes because that is
+// where they are read. System notes are kept — "changed the description" is often the answer
+// to why the diff moved — but flagged, to be drawn as the small print they are.
+export function talkRows(discussions) {
+  const out = [];
+  for (const d of Array.isArray(discussions) ? discussions : []) {
+    for (const n of Array.isArray(d?.notes) ? d.notes : []) {
+      const at = n.position ?? {};
+      const path = String(at.new_path ?? at.old_path ?? "");
+      const line = at.new_line ?? at.old_line ?? null;
+      const body = String(n.body ?? "");
+      out.push({
+        id: "n" + String(n.id ?? out.length),
+        who: n.author?.name || n.author?.username || "?",
+        at: Date.parse(n.created_at) || 0,
+        system: Boolean(n.system),
+        resolved: n.resolvable ? Boolean(n.resolved) : null,
+        where: path ? (line ? path + ":" + line : path) : "",
+        plain: mdInline(body.split("\n")[0] ?? ""),
+        body: mdLines(body),
+      });
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
 
 export const enc = (path) => String(path).split("/").map(encodeURIComponent).join("%2F");
 
@@ -359,6 +440,10 @@ export default class MrReview extends View {
     this.meta = null;
     this.files = [];
     this.desc = [];
+    this.ci = null; // the newest pipeline, once glab has said what it is doing
+    this.talk = []; // the notes, oldest first
+    this.talkCut = 0; // how many older ones were left out
+    this.talkOpen = false; // the discussion column, in this tab only
     this.open = null;
     this.lines = [];
     this.rows = [];
@@ -372,6 +457,7 @@ export default class MrReview extends View {
     this.loading = false;
     this.busy = false;
     this.limited = false;
+    this.again = false; // a load that was asked for while one was already out
     this.raw = null; // the whole patch, fetched only when a diff really arrives folded
     cx.timer.every(REFRESH, (cx) => this.load(cx));
     cx.spawn(async (cx) => {
@@ -401,16 +487,38 @@ export default class MrReview extends View {
   // `after` runs once this load's answer is in — or at once, when there was nothing to ask:
   // act() uses it to judge the merge by the MR as glab reports it afterwards.
   load(cx, after) {
-    if (!this.iid || !this.path || this.loading || this.busy) { after?.(); return; }
+    if (!this.iid || !this.path) { after?.(); return; }
+    // Asked again while glab is still thinking about the last time — the ↻ is a click away
+    // and a poll can take 15 s — remembered and gone round once more when this one lands,
+    // instead of a click that appears to do nothing.
+    if (this.loading || this.busy) { if (!this.busy) this.again = true; after?.(); return; }
     this.loading = true;
+    // A refresh is meant to show what GitLab has now, and the whole patch is one of the
+    // things it may have to show: kept across loads, a folded file would keep the diff it
+    // had when the tab was opened.
+    this.raw = null;
     const project = `${enc(this.path)}/merge_requests/${this.iid}`;
     cx.spawn(async (cx) => {
       try {
-        const [meta, diffs] = await Promise.all([
+        // The meta and the diff are the review: without them there is nothing to show, so
+        // they are the two that can fail the load. The pipeline and the discussion are the
+        // extras — a GitLab with CI turned off, or a token that cannot read the notes, must
+        // not cost the reader the diff — so each answers `undefined` instead, which the
+        // fields below read as "no news" and keep what they had.
+        const soft = (p) => p.catch(() => undefined);
+        const [meta, diffs, pipelines, discussions] = await Promise.all([
           this.call(["api", `projects/${project}`]),
           this.call(["api", "--paginate", `projects/${project}/diffs?per_page=100`]),
+          soft(this.call(["api", `projects/${project}/pipelines?per_page=5`])),
+          soft(this.call(["api", "--paginate", `projects/${project}/discussions?per_page=100`])),
         ]);
         this.meta = meta;
+        if (pipelines !== undefined) this.ci = pipelineOf(pipelines);
+        if (discussions !== undefined) {
+          const talk = talkRows(discussions);
+          this.talkCut = Math.max(0, talk.length - MAXTALK);
+          this.talk = talk.slice(-MAXTALK);
+        }
         this.desc = mdLines(String(meta?.description ?? ""));
         this.files = (Array.isArray(diffs) ? diffs : []).slice(0, MAXFILES).map(fileOf);
         this.limited = (Array.isArray(diffs) ? diffs : []).length > MAXFILES;
@@ -425,6 +533,7 @@ export default class MrReview extends View {
         this.loading = false;
         after?.();
         cx.notify();
+        if (this.again) { this.again = false; this.load(cx); }
       }
     });
     cx.notify();
@@ -563,11 +672,14 @@ export default class MrReview extends View {
     if (this.meta?.web_url) exec("glab", ["mr", "view", this.iid, "-R", this.path, "--web"]).catch(() => {});
   }
 
-  button(t, id, label, kind, on) {
+  button(t, id, label, kind, on, why) {
     return div().id(id).h(28).px(12).flex().items_center().rounded(7).text_size(12)
       .bg(on ? (kind === "merge" ? t.solid : t.raised) : t.raised)
       .text_color(kind === "close" ? t.blocked : on ? (kind === "merge" ? t.solid_foreground : t.foreground) : t.dim)
       .when(on, (e) => e.cursor_pointer().hover((s) => s.opacity(0.88)).on_click(() => this.ask(kind)))
+      // A button that does nothing has to say why, or it reads as a broken panel rather than
+      // as GitLab's answer.
+      .when(!on && Boolean(why), (e) => e.tooltip(why))
       .child(label);
   }
 
@@ -589,29 +701,51 @@ export default class MrReview extends View {
   // What the chips and the two buttons may do. Closing is allowed whatever GitLab
   // thinks about merging, and only while the MR is still open.
   verdict(m = this.meta ?? {}) {
-    const [status, tone] = STATUS[m.detailed_merge_status] ?? ["", "dim"];
+    const dms = String(m.detailed_merge_status ?? "");
+    const [status, tone] = STATUS[dms] ?? [dms, "dim"];
     const live = m.state === "opened" && !this.busy && !this.loading && Boolean(this.files.length);
-    return { status, tone, live, canMerge: live && !BLOCKED.includes(m.detailed_merge_status) };
+    // Red is GitLab saying no, and a draft is a no it only says quietly. Everything else —
+    // "检查中" included — is left to glab, whose refusal carries its own reason, rather than
+    // this panel guessing at a state it does not know.
+    const canMerge = live && tone !== "blocked" && dms !== "draft_status";
+    return { status, tone, live, canMerge };
   }
 
   head(t) {
     const m = this.meta ?? {};
     const { status, tone, live, canMerge } = this.verdict(m);
     const shown = Boolean(this.view("desc"));
+    const said = this.talk.filter((n) => !n.system).length;
     return v_flex().flex_none().p(10).gap(7).children([
       h_flex().gap(8).items_center().children([
         div().px(5).py(1).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(`!${this.iid}`),
         div().flex_1().min_w(0).truncate().font_semibold().child(String(m.title ?? (this.loading ? "加载中…" : "没有标题"))),
         div().text_size(11).text_color(t[tone] ?? t.dim).child(status),
+        ...(this.ci ? [this.ciChip(t)] : []),
         this.quiet(t, "refresh", this.loading ? "⋯" : "↻", "重新问一次 GitLab", (_, cx) => this.load(cx)),
         this.quiet(t, "web", "在浏览器打开", "glab mr view --web", () => this.web()),
         this.button(t, "close-mr", "关闭 MR", "close", live),
-        this.button(t, "merge-mr", "合并", "merge", canMerge),
+        this.button(t, "merge-mr", "合并", "merge", canMerge,
+          canMerge || !live ? null : `GitLab 不让合并：${status || "检查没过"}（逐项检查在浏览器里能看到）`),
       ]),
       h_flex().gap(10).items_center().text_size(11).text_color(t.dim).children([
         div().flex_1().min_w(0).truncate().child(`${m.author?.name || m.author?.username || "?"} · ${String(m.source_branch ?? "")} → ${String(m.target_branch ?? "")}`),
         div().flex_none().child(ago(Date.parse(m.updated_at) || 0)),
         div().flex_none().truncate().child(this.path),
+        said || this.talkOpen
+          ? div().id("show-talk").h(20).px(7).rounded(5).items_center().bg(this.talkOpen ? t.selected : t.raised)
+            .text_color(this.talkOpen ? t.foreground : t.muted).cursor_pointer()
+            .tooltip(this.talkOpen ? "收起讨论" : "展开讨论")
+            .on_click((_e, cx) => {
+              this.talkOpen = !this.talkOpen;
+              // The description has the window to itself when it is open, so asking for the
+              // discussion is also asking to stop reading it — otherwise the click opens a
+              // column nobody can see.
+              if (this.talkOpen && Boolean(this.view("desc"))) this.setView("desc", false);
+              cx.notify();
+            })
+            .child(`讨论 ${said}`)
+          : div().flex_none(),
         this.desc.length
           ? div().id("show-desc").h(20).px(7).rounded(5).items_center().bg(t.raised).text_color(t.muted).cursor_pointer()
             .tooltip(shown ? "收起说明" : "展开说明")
@@ -620,6 +754,62 @@ export default class MrReview extends View {
           : div().flex_none(),
       ]),
     ]);
+  }
+
+  // Beside GitLab's verdict rather than inside it: the verdict only says that CI is one of
+  // the reasons the MR cannot go in, this says which run it is and how it ended — and it is
+  // the way into the job log the verdict never names.
+  ciChip(t) {
+    const ci = this.ci;
+    return div().id("mr-ci").flex_none().text_size(11).text_color(t[ci.tone] ?? t.dim)
+      .when(Boolean(ci.url), (e) => e.cursor_pointer().hover((s) => s.opacity(0.8))
+        .tooltip(`流水线 #${ci.id}${ci.sha ? ` · ${ci.sha}` : ""}${ci.at ? ` · ${ago(ci.at)}` : ""} · 在浏览器打开`)
+        .on_click((_e, cx) => cx?.open_url?.(ci.url)))
+      .child(ci.label);
+  }
+
+  // The discussion, beside the diff rather than in place of it: a comment about a file is
+  // read with that file on screen, and the diff is what it is about. A fixed width, so
+  // switching it on does not leave the diff a different shape every time a note arrives.
+  talkPane(t) {
+    const id = `mr-talk-${this.iid}`;
+    const said = this.talk.filter((n) => !n.system).length;
+    return v_flex().id(id).flex_none().w(360).h_full().min_w(0).min_h(0)
+      .border_l(1).border_color(t.border)
+      .child(h_flex().h(28).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border)
+        .child(div().text_size(11).text_color(t.muted).child(`讨论 ${said} 条`))
+        .child(div().flex_1())
+        .child(this.quiet(t, "talk-close", "收起", "把讨论收起来，让差异占满", (_e, cx) => { this.talkOpen = false; cx.notify(); })))
+      .child(div().flex_1().min_h(0).relative()
+        .child(v_flex().id(`${id}-list`).absolute().inset_0().overflow_y_scroll().p(8).gap(6)
+          .when(this.talkCut > 0, (e) => e.child(div().w_full().flex_none().text_size(10.5).text_color(t.dim)
+            .child(`前面还有 ${this.talkCut} 条没有列出来`)))
+          .when(this.talk.length === 0, (e) => e.child(div().w_full().flex_none().text_size(11).text_color(t.dim).child("还没有人评论")))
+          .children(this.talk.map((n) => this.talkRow(t, n))))
+        .child(Scrollbar.vertical(`${id}-list`).absolute().inset_0()));
+  }
+
+  // A comment is a card: who said it, when, which line it hangs on, then the words in the
+  // same markdown the description is read in. A system note is one dim line instead, because
+  // "changed the description" is context for the diff, not something somebody said to you.
+  talkRow(t, n) {
+    if (n.system) {
+      return h_flex().id(`talk-${n.id}`).w_full().flex_none().gap(6).items_center().px(2).py(1)
+        .child(div().flex_none().text_size(10.5).text_color(t.dim).child(n.who))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(n.plain || "—"))
+        .child(div().flex_none().text_size(10.5).text_color(t.dim).child(ago(n.at)));
+    }
+    return v_flex().id(`talk-${n.id}`).w_full().flex_none().rounded(6).border_1().border_color(t.border).p(7).gap(3)
+      .children([
+        h_flex().w_full().min_w(0).gap(6).items_center().children([
+          div().flex_none().text_size(11.5).font_semibold().child(n.who),
+          ...(n.resolved === null ? [] : [div().flex_none().rounded(4).px(4).py(1).text_size(10)
+            .bg(t.raised).text_color(n.resolved ? t.done : t.working).child(n.resolved ? "已解决" : "未解决")]),
+          div().flex_1().min_w(0).truncate().text_size(10).text_color(t.dim).child(n.where),
+          div().flex_none().text_size(10).text_color(t.dim).child(ago(n.at)),
+        ]),
+        v_flex().w_full().flex_none().gap(2).children(this.mdBlocks(t, n.body, `t-${n.id}`)),
+      ]);
   }
 
   descPane(t) {
@@ -638,29 +828,29 @@ export default class MrReview extends View {
   // line per row, a quote keeps a single bar down its side, and a paragraph stays together.
   // Drawing them line by line gave every code line a rounded box of its own, which read as
   // a stack of chips rather than as code, and left the quote's bar broken between lines.
-  mdBlocks(t) {
-    const rows = this.desc;
+  mdBlocks(t, rows = this.desc, pre = "d") {
     const out = [];
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const run = [row];
       while (["code", "quote", "p"].includes(row.kind) && rows[i + 1]?.kind === row.kind) run.push(rows[++i]);
+      const id = `${pre}-${i}`;
       if (row.kind === "code") {
-        out.push(v_flex().id(`d-${i}`).w_full().flex_none().px(8).py(6).rounded(5).bg(t.raised).gap(1)
+        out.push(v_flex().id(id).w_full().flex_none().px(8).py(6).rounded(5).bg(t.raised).gap(1)
           .font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.muted)
           .children(run.map((l) => div().child(l.text || " "))));
       } else if (row.kind === "quote") {
-        out.push(v_flex().id(`d-${i}`).w_full().flex_none().pl(8).py(1)
+        out.push(v_flex().id(id).w_full().flex_none().pl(8).py(1)
           .border_l(2).border_color(t.border).text_color(t.muted)
           .children(run.map((l) => div().child(l.text))));
       } else if (row.kind === "p") {
-        out.push(v_flex().id(`d-${i}`).w_full().flex_none().children(run.map((l) => div().child(l.text))));
+        out.push(v_flex().id(id).w_full().flex_none().children(run.map((l) => div().child(l.text))));
       } else if (row.kind === "rule") {
-        out.push(div().id(`d-${i}`).w_full().flex_none().h(1).my(3).bg(t.border));
+        out.push(div().id(id).w_full().flex_none().h(1).my(3).bg(t.border));
       } else if (row.kind === "table") {
-        out.push(this.tableBox(t, row, i));
+        out.push(this.tableBox(t, row, i, pre));
       } else {
-        out.push(this.mdRow(t, row, i));
+        out.push(this.mdRow(t, row, i, pre));
       }
     }
     return out;
@@ -669,7 +859,7 @@ export default class MrReview extends View {
   // A table as a grid: a header row over a rule, then a row per line, the cells sharing
   // the width. Its pipes used to be drawn as monospace text, which read as one long code
   // line that wrapped wherever it liked.
-  tableBox(t, l, i) {
+  tableBox(t, l, i, pre = "d") {
     const all = [l.head, ...l.rows];
     const cols = Math.max(...all.map((r) => r.length));
     // A column is as wide as what is in it, capped: a table of a name and a sentence reads
@@ -684,29 +874,29 @@ export default class MrReview extends View {
     const line = (cells, head) => h_flex().w_full().items_start()
       .when(head, (e) => e.bg(t.raised))
       .children(Array.from({ length: cols }, (_, k) => cell(cells[k], k, head)));
-    return v_flex().id(`d-${i}`).w_full().flex_none().rounded(5).overflow_hidden()
+    return v_flex().id(`${pre}-${i}`).w_full().flex_none().rounded(5).overflow_hidden()
       .children([line(l.head, true), div().w_full().flex_none().h(1).bg(t.border), ...l.rows.map((r) => line(r, false))]);
   }
 
-  mdRow(t, l, i) {
+  mdRow(t, l, i, pre = "d") {
     const pad = 12 * (l.depth ?? 0);
-    if (l.kind === "gap") return div().id(`d-${i}`).h(6).flex_none();
+    if (l.kind === "gap") return div().id(`${pre}-${i}`).h(6).flex_none();
     // A heading is a size as well as a weight: h1 and h2 have to read as breaks in a long
     // description, h3 and deeper as a label on what follows.
     if (l.kind === "head") {
       const size = l.level === 1 ? 15 : l.level === 2 ? 13.5 : 12.5;
-      return div().id(`d-${i}`).w_full().flex_none().text_size(size).font_semibold().child(l.text);
+      return div().id(`${pre}-${i}`).w_full().flex_none().text_size(size).font_semibold().child(l.text);
     }
     if (l.kind === "check") {
-      return h_flex().id(`d-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
+      return h_flex().id(`${pre}-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
         .child(div().w(14).flex_none().text_color(l.done ? t.done : t.dim).child(l.done ? "☑" : "☐"))
         .child(v_flex().flex_1().min_w(0).text_color(l.done ? t.muted : t.foreground)
           .children(textLines(l.text)));
     }
-    if (l.kind === "li") return h_flex().id(`d-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
+    if (l.kind === "li") return h_flex().id(`${pre}-${i}`).w_full().flex_none().gap(8).ml(pad).items_start()
       .child(div().w(8).flex_none().text_color(t.dim).child("·"))
       .child(v_flex().flex_1().min_w(0).children(textLines(l.text)));
-    return div().id(`d-${i}`).w_full().flex_none().ml(pad).child(l.text);
+    return div().id(`${pre}-${i}`).w_full().flex_none().ml(pad).child(l.text);
   }
 
   diffRow({ kind, number, text }, t) {
@@ -814,7 +1004,8 @@ export default class MrReview extends View {
       .child(this.head(t))
       .when(reading, (e) => e.child(this.descPane(t)))
       .when(Boolean(this.error), (e) => e.child(div().px(10).py(6).text_size(11).text_color(t.blocked).child(this.error)))
-      .when(!this.error && !reading, (e) => e.child(h_flex().flex_1().min_h(0).children([this.filesPane(t), this.diffPane(t)])))
+      .when(!this.error && !reading, (e) => e.child(h_flex().flex_1().min_h(0).children(
+        [this.filesPane(t), this.diffPane(t), ...(this.talkOpen ? [this.talkPane(t)] : [])])))
       .when(Boolean(this.note), (e) => e.child(h_flex().flex_none().px(10).py(6).gap(8).items_center().border_t(1).border_color(t.border)
         .child(div().flex_1().min_w(0).text_size(11).text_color(this.noteBad ? t.blocked : t.done).child(this.note))
         .when(this.busy, (b) => b.child(div().text_size(11).text_color(t.dim).frames(SPINNER, 90)))

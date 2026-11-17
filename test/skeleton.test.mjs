@@ -32,6 +32,7 @@ const ELSEWHERE = new Map([
   ["menu-pi", "the terminal right-click menu (layout.terminal_menu)"],
   ["pi-gui", "opened by mod.open:pi-gui, split beside a terminal"],
   ["mr-review", "opened in a tab by gitlab-mr (tab.new {mod: \"mr-review\"})"],
+  ["issue-review", "opened in a tab by gitlab-issues (tab.new {mod: \"issue-review\"})"],
 ]);
 
 test("every block that names a mod names a folder that exists", () => {

@@ -39,7 +39,9 @@ The ideas this leans on, and where they came from:
 | `mods/rail/` | the right-edge rail that opens the panel stack and the board | `~/.config/herdr-app/mods/rail/` |
 | `mods/board/` | every agent at a glance: Needs you, and an Overview of all tabs | `~/.config/herdr-app/mods/board/` |
 | `mods/gitlab-mr/` | merge requests of the space's project, via `glab` | `~/.config/herdr-app/mods/gitlab-mr/` |
+| `mods/gitlab-issues/` | open issues of the space's project, or of every project, via `glab` | `~/.config/herdr-app/mods/gitlab-issues/` |
 | `mods/mr-review/` | one MR reviewed in a tab of its own | `~/.config/herdr-app/mods/mr-review/` |
+| `mods/issue-review/` | one issue read in a tab of its own: description, discussion, close and reopen | `~/.config/herdr-app/mods/issue-review/` |
 | `mods/pi-sessions/` | Pi sessions of the folder the space works in | `~/.config/herdr-app/mods/pi-sessions/` |
 | `mods/menu-pi/` | terminal right-click menu, cloned from Herdr's `menu` with one row added | `~/.config/herdr-app/mods/menu-pi/` |
 | `extensions/pi-gui-bridge/` | Pi extension: HTTP bridge on 127.0.0.1 | `~/.pi/agent/extensions/pi-gui-bridge/` |
@@ -66,7 +68,7 @@ work               tabs
                    work-body, padding 8, gap 8
                      screens    stack: main (the tab's panes) | board   — the board takes the middle
                      panel      stack: files | changes          hidden
-                     sidepanel  stack: gitlab-mr | pi-sessions  hidden, the rail opens it
+                     sidepanel  stack: gitlab-mr | gitlab-issues | pi-sessions  hidden, the rail opens it
                      rail       the icon rail, 44 px
                    status (workspace-status)
 ```
@@ -278,13 +280,27 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
 
 - **rail** — one cell per panel, an icon each. Clicking the glowing one closes the
   column; clicking another shows that one. A panel with something to report
-  (gitlab-mr's MR count, or `!` for a failure) puts a badge on its icon through
-  shared state, so the rail needs to know nothing about GitLab.
+  (gitlab-mr's MR count, gitlab-issues' issue count, or `!` for a failure) puts a
+  badge on its icon through shared state, so the rail needs to know nothing about
+  GitLab.
 - **gitlab-mr** — the space's project and every open MR the token can see, grouped
   by project, the space's own one first; a row opens mr-review in a tab of its own, and
   clicking the same row again shows that tab rather than opening a second copy of it.
   CI status is not shown: this GitLab leaves `pipeline` out of both list endpoints,
   so the verdict is `detailed_merge_status`.
+- **gitlab-issues** — the same two scopes for open issues: the space's project, or
+  every project the token can see, grouped with the space's own one first. A row
+  shows the issue's labels and who it is assigned to, and opens it in an issue-review
+  tab (the same click-twice rule as the MR list). The project comes from the folder's
+  `origin` remote — the branch's upstream remote when there is no origin — because an
+  issue belongs to the project and not to the branch, which is why this panel and
+  gitlab-mr read the repo differently.
+- **issue-review** — one issue read in a tab of its own: the description on the left in
+  the same markdown the MR review draws (headings, checkboxes, code, tables), the
+  discussion on the right, with labels in GitLab's own colours, milestone and due date
+  in the header, and close / reopen behind a confirmation dialog. A closed issue leaves
+  the list at once (shared state again) instead of waiting out the poll; a reopened one
+  comes back the same way. The browser is a button, not the click.
 - **mr-review** — changed files on the left, their diff on the right, merge and close
   along the top. GitLab's verdict is spelled out (`需先 rebase`, `有冲突`, `待批准`…) and a
   merge it refuses is a button that will not press, with the reason on its tooltip. Beside
@@ -317,6 +333,8 @@ Four harnesses, and none of them needs Herdr:
 |---|---|
 | `test/rail.test.mjs` | the rail and the MR panel against one fake layout document, so what is checked is the protocol between them: who is showing, badges, hide and show |
 | `test/mr-review.test.mjs` | what the review asks `glab` for, the file list it builds, the comments and the pipeline it draws, what a confirmed dialog finally runs — no GitLab is ever touched |
+| `test/gitlab-issues.test.mjs` | the issues panel: its two scopes, the remote it reads the project from, the tab a click opens, and the count the rail puts on the icon |
+| `test/issue-review.test.mjs` | the issue tab: the two API calls, the description and thread it builds, what a confirmed dialog finally runs, and the shared marks close and reopen leave |
 | `test/pi-sessions.test.mjs` | a real temp sessions tree, and mostly call counts, because the point of the panel is what it does *not* read |
 | `test/board.test.mjs` | the board's names, groups and counts, and the rail rows that open it |
 | `test/blocks.test.mjs` | the markdown splitter pi-gui draws code boxes and tables from (pure: bare node) |

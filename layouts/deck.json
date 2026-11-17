@@ -198,6 +198,17 @@
                   }
                 },
                 {
+                  "id": "gitlab-issues",
+                  "type": "block",
+                  "content": {
+                    "mod": "gitlab-issues",
+                    "props": {
+                      "stack": "sidepanel",
+                      "node": "gitlab-issues"
+                    }
+                  }
+                },
+                {
                   "id": "pi-sessions",
                   "type": "block",
                   "content": {

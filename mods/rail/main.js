@@ -23,6 +23,7 @@ import { layout, run, setShared, shared, theme } from "herdr";
 
 const ENTRIES = [
   { stack: "sidepanel", child: "gitlab-mr", icon: "mods/rail/mr.svg", tip: "Merge requests", badge: "gitlab-mr.badge" },
+  { stack: "sidepanel", child: "gitlab-issues", icon: "mods/rail/issues.svg", tip: "Issues", badge: "gitlab-issues.badge" },
   { stack: "sidepanel", child: "pi-sessions", icon: "mods/rail/sessions.svg", tip: "Pi sessions" },
   { screen: "screens", child: "board", view: "needs", icon: "mods/rail/needs.svg", tip: "Needs you", badge: "deck.board.badge" },
   { screen: "screens", child: "board", view: "overview", icon: "mods/rail/overview.svg", tip: "Overview" },

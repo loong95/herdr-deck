@@ -57,7 +57,9 @@ if ($Remote) {
 $targets = @(
   @{ name = "mods/rail";                live = Join-Path $appHome "mods/rail" },
   @{ name = "mods/gitlab-mr";           live = Join-Path $appHome "mods/gitlab-mr" },
+  @{ name = "mods/gitlab-issues";       live = Join-Path $appHome "mods/gitlab-issues" },
   @{ name = "mods/mr-review";           live = Join-Path $appHome "mods/mr-review" },
+  @{ name = "mods/issue-review";        live = Join-Path $appHome "mods/issue-review" },
   @{ name = "mods/pi-sessions";         live = Join-Path $appHome "mods/pi-sessions" },
   @{ name = "mods/pi-gui";              live = Join-Path $appHome "mods/pi-gui" },
   @{ name = "mods/menu-pi";             live = Join-Path $appHome "mods/menu-pi" },

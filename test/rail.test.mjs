@@ -5,7 +5,7 @@
 // The modules the mods import come from test/stub/ (see stub/register.mjs): the real source
 // is imported as it is, nothing is copied, stripped or re-evaluated.
 import { fake, log } from "./stub/herdr.mjs";
-import GitlabMr, { pathOfRemote, projectOf, say, ago } from "../mods/gitlab-mr/main.js";
+import GitlabMr, { pathOfRemote, projectOf, say, ago, short } from "../mods/gitlab-mr/main.js";
 import Rail from "../mods/rail/main.js";
 
 // --- the fake host ---
@@ -98,6 +98,7 @@ eq("say api", say('{"message":"404 Project Not Found"}glab: HTTP 404 (HTTP 404)'
 eq("say prefix", say("glab: command not found"), "command not found");
 eq("say string", say("This space has no folder to read a repo from."), "This space has no folder to read a repo from.");
 eq("ago", [Date.now() - 40 * 60e3, Date.now() - 9 * 864e5, 0].map(ago), ["40m", "9d", ""]);
+eq("short", [short("a\n b"), short("x".repeat(50), 4)], ["a b", "xxxx…"]);
 
 // --- the panel, hidden by the layout ---
 fake.props = { stack: "sidepanel", node: "gitlab-mr" };
@@ -403,22 +404,34 @@ await settle();
 
 log.run.length = 0;
 o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
-eq("第一次点：开一个新 tab", runs.map((r) => [r[0], r[1].name, r[1].mod]), [["tab.new", "!4 编辑脚本", "mr-review"]]);
+eq("第一次点：开一个新 tab，名字里带着项目", runs.map((r) => [r[0], r[1].name, r[1].mod]),
+  [["tab.new", "!4 编辑脚本 · acme/platform/db", "mr-review"]]);
 eq("tab 带着哪台机器的 glab", runs[0][1].props, { iid: "4", path: "acme/platform/db", on: "wsl" });
 
 log.run.length = 0;
 o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
 eq("还没有这个名字的 tab，就照旧再开一个", runs.map((r) => r[0]), ["tab.new"]);
 
-// 那个 tab 现在在了，标题还改过：认的是 !iid，不是整条名字
-fake.spaces = sp([{ id: "tb1", name: "1" }, { id: "tb7", name: "!4 改名之后" }]);
+// 那个 tab 现在在了，标题还改过：认的是 !iid 和项目，不是整条名字
+fake.spaces = sp([{ id: "tb1", name: "1" }, { id: "tb7", name: "!4 改名之后 · acme/platform/db" }]);
 log.run.length = 0;
 o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
 eq("已经开着就把那个调出来", runs, [["tab.select", { id: "tb7" }]]);
 
+// iid 在 GitLab 上是每个项目各自数的：!4 的世界里有两个项目，它们是两个 tab
+log.run.length = 0;
+o.open({ iid: 4, path: "acme/other/db", title: "编辑脚本" });
+eq("另一个项目的 !4 不是自己", runs.map((r) => [r[0], r[1].name]), [["tab.new", "!4 编辑脚本 · acme/other/db"]]);
+
 log.run.length = 0;
 o.open({ iid: 44, path: "acme/platform/db", title: "另一个" });
 eq("!44 不会被 !4 当成自己", runs.map((r) => r[0]), ["tab.new"]);
+
+// 标题再长也挤不掉项目：它在名字的尾巴上，是身份的一部分
+log.run.length = 0;
+o.open({ iid: 5, path: "acme/platform/db", title: "长".repeat(90) });
+eq("长标题截断，项目还在",
+  [runs[0][1].name.endsWith(" · acme/platform/db"), runs[0][1].name.includes("…")], [true, true]);
 
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

@@ -126,6 +126,13 @@ export function say(e) {
   return text.split("\n").map(clean).find((l) => l && !noise.test(l)) ?? "glab did not answer";
 }
 
+// A title, cut to what a tab can wear: the project it was cut from is at the end of the name and
+// must survive, so the title gives way first.
+export function short(title, max = 44) {
+  const one = String(title ?? "").replace(/\s+/g, " ").trim();
+  return one.length > max ? one.slice(0, max) + "…" : one;
+}
+
 function row(m, i) {
   const [status, tone] = STATUS[m.detailed_merge_status] ?? [String(m.detailed_merge_status ?? ""), "dim"];
   return {
@@ -437,14 +444,19 @@ export default class GitlabMr extends View {
     return div().flex_none().text_size(10.5).text_color(t[m.tone] ?? t.dim).child(label);
   }
 
-  // The tab this MR already has, if the space is showing one. A tab's name is the only handle
-  // a mod has on another tab — `spaces()` carries ids and names, nothing about the mod inside
-  // — so the match is the `!iid` the name starts with: the title can change under it, the iid
-  // cannot. A tab the person renamed looks new, and gets a second copy: the harmless way round.
-  tabFor(iid) {
-    const name = `!${iid}`;
-    const tabs = this.space()?.tabs ?? [];
-    return tabs.find((t) => t.name === name || String(t.name ?? "").startsWith(name + " ")) ?? null;
+  // The tab this MR already has, if the space is showing one: `!iid title · project`. The project
+  // tail is not decoration — an iid is not an identity, because every project has a !4, and
+  // picking another project's review off a list of both is the mistake this panel exists to
+  // avoid. (panes() knows which tab holds a mod, but not the props it was opened with, so a name
+  // really is all there is to go on.) The iid sits at the head and the project at the tail, so the
+  // title — which can change under the tab — is in between and may be cut short.
+  tabFor(m) {
+    const head = `!${m.iid} `;
+    const mark = ` · ${m.path}`;
+    return (this.space()?.tabs ?? []).find((t) => {
+      const name = String(t.name ?? "");
+      return name.startsWith(head) && name.endsWith(mark);
+    }) ?? null;
   }
 
   // A review tab of its own: a diff needs the width of the main area, which this panel
@@ -454,10 +466,10 @@ export default class GitlabMr extends View {
   // same review under the same name and a third poll of glab for the same diff.
   open(m) {
     if (!m.path) return;
-    const there = this.tabFor(m.iid);
+    const there = this.tabFor(m);
     if (there) { run("tab.select", { id: there.id }); return; }
     run("tab.new", {
-      name: `!${m.iid} ${m.title}`.slice(0, 60),
+      name: `!${m.iid} ${short(m.title)} · ${m.path}`,
       mod: "mr-review",
       props: { iid: String(m.iid), path: m.path, on: this.space()?.machine ?? null },
     });

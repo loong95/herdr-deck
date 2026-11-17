@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fake, log } from "./stub/herdr.mjs";
 import { byId, textOf } from "./stub/element.mjs";
-import GitlabIssues, { ago, pathOfRemote, projectOf, projectOfUrl, rowOf, say } from "../mods/gitlab-issues/main.js";
+import GitlabIssues, { ago, pathOfRemote, projectOf, projectOfUrl, rowOf, say, short } from "../mods/gitlab-issues/main.js";
 import Rail from "../mods/rail/main.js";
 
 const REPO = "/home/dev/projects/acme/api";
@@ -125,6 +125,9 @@ test("the pure helpers, against what this GitLab and this machine say", () => {
   assert.equal(say('{"message":"404 Project Not Found"}glab: HTTP 404 (HTTP 404)'), "404 Project Not Found");
   assert.equal(say("glab: command not found"), "command not found");
   assert.deepEqual([Date.now() - 40 * 60e3, Date.now() - 9 * 864e5, 0].map(ago), ["40m", "9d", ""]);
+  // A tab's name: one line, and cut before the project at its end is reached.
+  assert.equal(short("tower-pct  docs\n评审", 10), "tower-pct …");
+  assert.equal(short("短"), "短");
   // An issue with no `references` and a label payload that carries objects instead of names.
   const r = rowOf({
     iid: 4, title: " t ", labels: ["a", { name: "b" }, ""],
@@ -229,8 +232,8 @@ test("a click opens a tab of its own, with that machine's glab", async () => {
   calls.length = 0;
   runs.length = 0;
   byId(el, "i-0")._h.on_click(null, cx);
-  assert.deepEqual(runs, [[["tab.new"].at(0), {
-    name: `#${row.iid} ${row.title}`.slice(0, 60),
+  assert.deepEqual(runs, [["tab.new", {
+    name: `#${row.iid} ${row.title} · ${row.path}`,
     mod: "issue-review",
     props: { iid: String(row.iid), path: row.path, on: "wsl" },
   }]]);
@@ -245,18 +248,30 @@ test("clicking the same issue again shows the tab it already has", async () => {
   p.open(row);
   assert.deepEqual(runs.map((r) => r[0]), ["tab.new"]);
 
-  // A tab's name is the only handle there is, and the title can change under it: the iid is
-  // what is matched.
+  // A tab's name is all there is to go on, and the title can change under it: what is matched is
+  // the iid at its head and the project at its tail.
   fake.spaces = [{ id: "s1", name: "api", folder: REPO, machine: "wsl", active: true,
-    tabs: [{ id: "tb1", name: "1" }, { id: "tb7", name: `#${row.iid} 改名之后` }] }];
+    tabs: [{ id: "tb1", name: "1" },
+      { id: "tb7", name: `#${row.iid} 改名之后 · ${row.path}` }] }];
   runs.length = 0;
   p.open(row);
   assert.deepEqual(runs, [["tab.select", { id: "tb7" }]]);
+
+  // Every project has a #2: the same iid in another project is another issue, and another tab.
+  runs.length = 0;
+  p.open({ ...row, path: "acme/other/thing" });
+  assert.deepEqual(runs.map((r) => [r[0], r[1].name]),
+    [["tab.new", `#${row.iid} ${row.title} · acme/other/thing`]]);
 
   // #77 is not #7: a longer iid must not be taken for a shorter one.
   runs.length = 0;
   p.open({ ...row, iid: Number(`${row.iid}7`) });
   assert.deepEqual(runs.map((r) => r[0]), ["tab.new"]);
+
+  // A title long enough to be cut still leaves the project on the name: it is the identity.
+  runs.length = 0;
+  p.open({ ...row, iid: 99, title: "长".repeat(90) });
+  assert.deepEqual([runs[0][1].name.endsWith(` · ${row.path}`), runs[0][1].name.includes("…")], [true, true]);
 });
 
 test("an issue closed in its tab leaves the list at once, and a stale mark does not", async () => {

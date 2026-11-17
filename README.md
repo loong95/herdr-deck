@@ -286,12 +286,15 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
 - **gitlab-mr** — the space's project and every open MR the token can see, grouped
   by project, the space's own one first; a row opens mr-review in a tab of its own, and
   clicking the same row again shows that tab rather than opening a second copy of it.
+  The tab is named `!iid title · project`, and that name is the whole of the match: an
+  iid is not an identity — every project has a `!4` — and a tab carries a name and
+  nothing else a mod can read.
   CI status is not shown: this GitLab leaves `pipeline` out of both list endpoints,
   so the verdict is `detailed_merge_status`.
 - **gitlab-issues** — the same two scopes for open issues: the space's project, or
   every project the token can see, grouped with the space's own one first. A row
   shows the issue's labels and who it is assigned to, and opens it in an issue-review
-  tab (the same click-twice rule as the MR list). The project comes from the folder's
+  tab (the same click-twice rule as the MR list, keyed the same way: `#iid title · project`). The project comes from the folder's
   `origin` remote — the branch's upstream remote when there is no origin — because an
   issue belongs to the project and not to the branch, which is why this panel and
   gitlab-mr read the repo differently.

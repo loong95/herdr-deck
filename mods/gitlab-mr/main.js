@@ -39,15 +39,32 @@ function find(node, id) {
   return null;
 }
 
-// GitLab's own verdict on whether the MR can go in, said shortly.
+// GitLab's own verdict on whether the MR can go in, said shortly. Every documented value is
+// here: `need_rebase` is what this GitLab says for "合并被阻止：快进合并不成立", and a row
+// that says nothing about why it cannot go in is worse than one with a raw word on it.
 const STATUS = {
   mergeable: ["mergeable", "done"],
   approvals_satisfied: ["approved", "done"],
   conflict: ["conflict", "blocked"],
+  need_rebase: ["needs rebase", "blocked"],
+  commits_status: ["commits missing", "blocked"],
   detached: ["behind", "blocked"],
   ci_must_pass: ["ci running", "working"],
+  ci_still_running: ["ci running", "working"],
   ci_stopped: ["ci stopped", "blocked"],
   approvals_blocked: ["needs approval", "working"],
+  not_approved: ["needs approval", "working"],
+  blocked_status: ["blocked", "blocked"],
+  discussions_not_resolved: ["unresolved", "blocked"],
+  requested_changes: ["changes asked", "blocked"],
+  status_checks_must_pass: ["checks failed", "blocked"],
+  locked_paths: ["paths locked", "blocked"],
+  security_policy_violations: ["policy", "blocked"],
+  title_regex: ["title", "blocked"],
+  jira_association_missing: ["no jira", "blocked"],
+  merge_time: ["merge window", "blocked"],
+  branch_missing: ["no branch", "blocked"],
+  approvals_syncing: ["approvals syncing", "dim"],
   draft_status: ["draft", "dim"],
   unchecked: ["checking", "dim"],
   checking: ["checking", "dim"],
@@ -110,7 +127,7 @@ export function say(e) {
 }
 
 function row(m, i) {
-  const [status, tone] = STATUS[m.detailed_merge_status] ?? ["", "dim"];
+  const [status, tone] = STATUS[m.detailed_merge_status] ?? [String(m.detailed_merge_status ?? ""), "dim"];
   return {
     n: i,
     iid: m.iid,
@@ -420,11 +437,25 @@ export default class GitlabMr extends View {
     return div().flex_none().text_size(10.5).text_color(t[m.tone] ?? t.dim).child(label);
   }
 
+  // The tab this MR already has, if the space is showing one. A tab's name is the only handle
+  // a mod has on another tab — `spaces()` carries ids and names, nothing about the mod inside
+  // — so the match is the `!iid` the name starts with: the title can change under it, the iid
+  // cannot. A tab the person renamed looks new, and gets a second copy: the harmless way round.
+  tabFor(iid) {
+    const name = `!${iid}`;
+    const tabs = this.space()?.tabs ?? [];
+    return tabs.find((t) => t.name === name || String(t.name ?? "").startsWith(name + " ")) ?? null;
+  }
+
   // A review tab of its own: a diff needs the width of the main area, which this panel
   // cannot give it (it stops at 560px), and it stays put while the list keeps refreshing.
   // The machine travels with it: glab here is far quicker on the space's own machine.
+  // Clicking the same MR twice shows the tab it already has, instead of a second copy of the
+  // same review under the same name and a third poll of glab for the same diff.
   open(m) {
     if (!m.path) return;
+    const there = this.tabFor(m.iid);
+    if (there) { run("tab.select", { id: there.id }); return; }
     run("tab.new", {
       name: `!${m.iid} ${m.title}`.slice(0, 60),
       mod: "mr-review",

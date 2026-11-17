@@ -394,5 +394,31 @@ eq("slow request: the spinner came down", g.slow, false);
 eq("slow request: not stuck loading", g.loading, false);
 hold = 0;
 
+// --- 一个 MR 一个 tab：再点同一行是把那个 tab 调出来，不是再开一个 ---
+const sp = (tabs) => [{ id: "sp1", name: "api", folder: REPO, machine: "wsl", active: true, tabs }];
+fake.spaces = sp([{ id: "tb1", name: "1" }, { id: "tb2", name: "2" }]);
+const o = new GitlabMr();
+o.init({}, cx);
+await settle();
+
+log.run.length = 0;
+o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
+eq("第一次点：开一个新 tab", runs.map((r) => [r[0], r[1].name, r[1].mod]), [["tab.new", "!4 编辑脚本", "mr-review"]]);
+eq("tab 带着哪台机器的 glab", runs[0][1].props, { iid: "4", path: "acme/platform/db", on: "wsl" });
+
+log.run.length = 0;
+o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
+eq("还没有这个名字的 tab，就照旧再开一个", runs.map((r) => r[0]), ["tab.new"]);
+
+// 那个 tab 现在在了，标题还改过：认的是 !iid，不是整条名字
+fake.spaces = sp([{ id: "tb1", name: "1" }, { id: "tb7", name: "!4 改名之后" }]);
+log.run.length = 0;
+o.open({ iid: 4, path: "acme/platform/db", title: "编辑脚本" });
+eq("已经开着就把那个调出来", runs, [["tab.select", { id: "tb7" }]]);
+
+log.run.length = 0;
+o.open({ iid: 44, path: "acme/platform/db", title: "另一个" });
+eq("!44 不会被 !4 当成自己", runs.map((r) => r[0]), ["tab.new"]);
+
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

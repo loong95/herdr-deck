@@ -281,7 +281,8 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
   (gitlab-mr's MR count, or `!` for a failure) puts a badge on its icon through
   shared state, so the rail needs to know nothing about GitLab.
 - **gitlab-mr** — the space's project and every open MR the token can see, grouped
-  by project, the space's own one first; a row opens mr-review in a tab of its own.
+  by project, the space's own one first; a row opens mr-review in a tab of its own, and
+  clicking the same row again shows that tab rather than opening a second copy of it.
   CI status is not shown: this GitLab leaves `pipeline` out of both list endpoints,
   so the verdict is `detailed_merge_status`.
 - **mr-review** — changed files on the left, their diff on the right, merge and close

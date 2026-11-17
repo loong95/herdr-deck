@@ -150,6 +150,17 @@ it focuses its own composer on open and on click.
   back on (the chip pins the same way, so it too reaches the last line). There is
   no auto-detect of "scrolled back to the bottom": a plain scroll area's handle
   takes a position and never reports one, so every wheel counts as leaving.
+- **A skill is one folded line, not a file in the bubble.** Pi does not hand
+  `/skill:pdf …` to the model: it replaces the command with the skill's whole
+  file (`<skill name="…" location="…">`), and the session log keeps that. Drawn
+  as it came, one message is hundreds of lines nobody typed. So the prompt
+  becomes two rows — `▸ skill:pdf  Fill in a form and read it back.  show`,
+  folded, and the person's own words in the bubble below it (no bubble at all
+  when the command carried none). Opening the row shows the skill's path and its
+  file, cut at 12000 characters with a `…` line: the file itself stays in the
+  session. The line beside the name is the skill's first line of prose — pi's
+  `References are relative to …` note and the headings say where the file is and
+  what it is called, not what the skill does.
 - **A run in progress is drawn, not implied.** Streaming text shows Pi talking,
   but a long tool call, a slow first token or a remote round trip shows nothing
   at all — so while `busy` (or while a send is in flight) the transcript gains a
@@ -223,7 +234,8 @@ transcript (`rows=<n>`, default 40), `from` is its index and `total` the whole
 row count. The built rows are cached in the bridge and rebuilt only when the
 branch's length, last entry id or the streaming text length changes, so a bump
 that carries no new content does not re-walk a long session. `rows` is already the display model
-(`user`, `assistant`, `thinking`, `tool` with `summary` and `result`): shaping
+(`user`, `assistant`, `thinking`, `tool` with `summary` and `result`, and
+`skill` with `name`, `summary`, `location` and a cut `body`): shaping
 happens in the bridge, so the panel stays a renderer. Events are coalesced to one
 bump per 120 ms, so token streaming does not cost one request per token.
 

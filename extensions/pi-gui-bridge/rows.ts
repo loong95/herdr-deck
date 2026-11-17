@@ -33,6 +33,16 @@ export function callSummary(args) {
   return Object.keys(object).length ? oneLine(object) : "";
 }
 
+// Pi expands a `/skill:name args` command into the skill's whole file: a
+// <skill name="…" location="…"> block, then the words the person wrote. That
+// block is context for the model, not something anyone typed, so it becomes its
+// own folded row and the bubble keeps only the words.
+const SKILL = /^<skill name="([^"]*)" location="([^"]*)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]*))?$/;
+
+// A skill file is long. The row carries its start, because a folded row is
+// context and every poll that has the row in its window carries it again.
+const SKILL_CHARS = 12000;
+
 const MERMAID = /^```mermaid[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
 
 /** Pulls mermaid fences out of a message: the text without them, and the sources. */
@@ -43,6 +53,36 @@ export function splitMermaid(text) {
     return "▤ diagram";
   });
   return { text: rest.trim(), blocks };
+}
+
+/** The skill a prompt was expanded from, and the words after it; null for plain text. */
+export function splitSkill(text) {
+  const match = SKILL.exec(String(text ?? ""));
+  if (!match) return null;
+  return { name: match[1], location: match[2], body: match[3], text: String(match[4] ?? "").trim() };
+}
+
+/** The one line a folded skill row shows: the skill's own first line of prose. */
+export function skillSummary(body) {
+  for (const line of String(body ?? "").split("\n")) {
+    const text = line.replace(/\s+/g, " ").trim();
+    if (!text || text.startsWith("#") || text.startsWith("References are relative to ")) continue;
+    return oneLine(text);
+  }
+  return "";
+}
+
+/**
+ * The rows one user message makes: its skill, if the prompt was expanded from
+ * one, then its words. A prompt that was nothing but a skill has no words.
+ */
+export function userRows(id, text) {
+  const skill = splitSkill(text);
+  if (!skill) return text ? [{ key: "u" + id, kind: "user", text }] : [];
+  const body = skill.body.length > SKILL_CHARS ? skill.body.slice(0, SKILL_CHARS) + "\n…" : skill.body;
+  const rows = [{ key: "s" + id, kind: "skill", name: skill.name, location: skill.location, body, summary: skillSummary(skill.body) }];
+  if (skill.text) rows.push({ key: "u" + id, kind: "user", text: skill.text });
+  return rows;
 }
 
 /**
@@ -65,8 +105,7 @@ export function buildRows(branch, maxRows = 400) {
     const id = entry.id || "e" + rows.length;
 
     if (message.role === "user") {
-      const text = textOf(message.content);
-      if (text) rows.push({ key: "u" + id, kind: "user", text });
+      rows.push(...userRows(id, textOf(message.content)));
       continue;
     }
     if (message.role !== "assistant") continue;

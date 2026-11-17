@@ -1,7 +1,7 @@
 // Run with: node --test ~/.pi/agent/extensions/pi-gui-bridge/rows.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildRows, callSummary, oneLine, splitMermaid, textOf } from "./rows.ts";
+import { buildRows, callSummary, oneLine, skillSummary, splitMermaid, splitSkill, textOf } from "./rows.ts";
 
 const message = (id, message, parentId = null) => ({ type: "message", id, parentId, message });
 const user = (id, text) => message(id, { role: "user", content: [{ type: "text", text }] });
@@ -92,6 +92,46 @@ test("splitMermaid pulls fenced diagrams out of the text", () => {
 test("splitMermaid leaves other fences alone", () => {
   const text = "```js\nconst a = 1;\n```";
   assert.deepEqual(splitMermaid(text), { text, blocks: [] });
+});
+
+// A prompt Pi expanded from a skill: the command is gone, replaced by the skill's whole file.
+// Drawn as it came, one message is hundreds of lines nobody typed, so the file is its own row.
+const BODY = "References are relative to C:\\skills\\pdf.\n\n# pdf\n\nFill in a form and read it back.\n\n1. open the file";
+const prompt = (args = "") => '<skill name="pdf" location="C:\\skills\\pdf\\SKILL.md">\n' + BODY + "\n</skill>" + (args ? "\n\n" + args : "");
+
+test("a skill block becomes its own row, and the words stay in the bubble", () => {
+  const rows = buildRows([user("7", prompt("fill this one in"))]);
+  assert.deepEqual(rows.map((r) => [r.kind, r.key]), [["skill", "s7"], ["user", "u7"]]);
+  const skill = rows[0];
+  assert.equal(skill.name, "pdf");
+  assert.equal(skill.location, "C:\\skills\\pdf\\SKILL.md");
+  assert.equal(skill.summary, "Fill in a form and read it back.");
+  assert.match(skill.body, /^References are relative to/);
+  assert.equal(rows[1].text, "fill this one in");
+});
+
+test("a prompt that was only a skill has no bubble", () => {
+  const rows = buildRows([user("8", prompt())]);
+  assert.deepEqual(rows.map((r) => r.kind), ["skill"]);
+  assert.equal(rows[0].key, "s8");
+});
+
+test("splitSkill leaves prose alone, and a block Pi never closed", () => {
+  assert.equal(splitSkill("what does /skill:pdf do?"), null);
+  assert.equal(splitSkill('<skill name="pdf" location="x">\nunclosed'), null);
+  assert.equal(splitSkill(""), null);
+});
+
+test("the folded line is the skill's first prose line, not its path or a heading", () => {
+  assert.equal(skillSummary(BODY), "Fill in a form and read it back.");
+  assert.equal(skillSummary("# only a heading"), "");
+});
+
+test("a skill file longer than a row carries is cut, and the row says so", () => {
+  const long = prompt().replace("1. open the file", "x".repeat(20000));
+  const rows = buildRows([user("9", long)]);
+  assert.ok(rows[0].body.endsWith("\n…"));
+  assert.ok(rows[0].body.length < 13000);
 });
 
 test("entry ids keep row keys unique across branches", () => {

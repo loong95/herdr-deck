@@ -403,6 +403,44 @@ function callSummary(name, args) {
   return oneLine(a);
 }
 
+// Pi expands a `/skill:name args` command into the skill's whole file: a
+// <skill name="…" location="…"> block, then the words the person wrote. That
+// block is context for the model, not something anyone typed, so it becomes its
+// own folded row and the bubble keeps only the words. The bridge shapes the
+// same rows (extensions/pi-gui-bridge/rows.ts); this is the read-only copy.
+const SKILL = /^<skill name="([^"]*)" location="([^"]*)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]*))?$/;
+
+// A skill file is long: the row carries its start, and the fold says how to get
+// the rest (the session file).
+const SKILL_CHARS = 12000;
+
+/** The skill a prompt was expanded from, and the words after it; null for plain text. */
+export function splitSkill(text) {
+  const m = SKILL.exec(String(text ?? ""));
+  if (!m) return null;
+  return { name: m[1], location: m[2], body: m[3], text: String(m[4] ?? "").trim() };
+}
+
+/** The one line a folded skill row shows: the skill's own first line of prose. */
+export function skillSummary(body) {
+  for (const line of String(body ?? "").split("\n")) {
+    const text = line.replace(/\s+/g, " ").trim();
+    if (!text || text.startsWith("#") || text.startsWith("References are relative to ")) continue;
+    return oneLine(text);
+  }
+  return "";
+}
+
+/** The rows one user message makes: its skill, if any, then its words. */
+function userRows(id, text) {
+  const skill = splitSkill(text);
+  if (!skill) return text ? [{ key: "u" + id, kind: "user", text }] : [];
+  const body = skill.body.length > SKILL_CHARS ? skill.body.slice(0, SKILL_CHARS) + "\n…" : skill.body;
+  const rows = [{ key: "s" + id, kind: "skill", name: skill.name, location: skill.location, body, summary: skillSummary(skill.body) }];
+  if (skill.text) rows.push({ key: "u" + id, kind: "user", text: skill.text });
+  return rows;
+}
+
 function buildRows(entries) {
   const results = new Map();
   for (const e of entries) {
@@ -418,8 +456,7 @@ function buildRows(entries) {
     const m = e.message;
     const id = e.id || "e" + rows.length;
     if (m.role === "user") {
-      const text = textOf(m.content);
-      if (text) rows.push({ key: "u" + id, kind: "user", text });
+      rows.push(...userRows(id, textOf(m.content)));
     } else if (m.role === "assistant") {
       (m.content || []).forEach((b, i) => {
         if (!b) return;
@@ -1833,6 +1870,20 @@ export default class PiGui extends View {
       return v_flex().id(r.key).flex_none().w_full().p(8).rounded(8).bg(t.raised)
         .child(div().text_size(10).text_color(t.dim).child("You"))
         .child(markdownView(r.key, r.text, t, { mono, size: 13 }));
+    }
+    if (r.kind === "skill") {
+      // One line by default: the command and what the skill does. The file is
+      // the model's context, not something to read through in the transcript.
+      return v_flex().id(r.key).flex_none().w_full().rounded(6).border_1().border_color(t.border)
+        .child(h_flex().px(8).py(4).gap(6).items_center().cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.toggle(r.key, cx))
+          .child(div().text_size(9).text_color(t.dim).child(open ? "▾" : "▸"))
+          .child(div().font_family(mono).text_size(11).text_color(t.muted).child("skill:" + r.name))
+          .child(div().flex_1().min_w(0).truncate().text_size(10).text_color(t.dim).child(r.summary))
+          .child(div().text_size(9).text_color(t.dim).child(open ? "hide" : "show")))
+        .when(open, (e) => e.child(v_flex().id(r.key + "-body").px(8).pb(6).gap(2)
+          .when(Boolean(r.location), (el) => el.child(div().text_size(10).text_color(t.dim).child(r.location)))
+          .child(div().font_family(mono).text_size(11).text_color(t.muted).child(r.body || "(empty skill file)"))));
     }
     if (r.kind === "assistant") {
       // Mermaid fences come back as PNGs the bridge rendered; until then a line

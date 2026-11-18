@@ -23,6 +23,9 @@ const TICK = 5000;
 // redraw of a mod redraws the whole window, so a poll that answers in a blink must not spend
 // two of them to mention itself.
 const SLOW = 350;
+// How long the ✓ stays on a number that was just copied: long enough to be seen, short enough
+// that the number goes back to being a number.
+const FLASH = 1200;
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -116,6 +119,15 @@ export function short(title, max = 44) {
   return one.length > max ? one.slice(0, max) + "…" : one;
 }
 
+// The reference an agent can be handed, the way GitLab writes one across projects:
+// `acme/team/db#3`. A bare iid is not a reference — every project has its own #3 — and a URL is
+// not what an agent wants to parse out of a sentence. Without a project path the number is all
+// there is, and half a reference is still better than none.
+export function refOf(path, iid, mark = "#") {
+  const project = String(path ?? "");
+  return project ? `${project}${mark}${iid}` : `${mark}${iid}`;
+}
+
 // One issue, in the shape the panel draws. Labels are names here: the list endpoints hand back
 // strings, and a payload that carries the whole label object says the same thing in `name`.
 export function rowOf(x, i) {
@@ -152,6 +164,7 @@ export default class GitlabIssues extends View {
     this.loadedFor = ""; // what the rows on screen belong to: this project, or every one
     this.seen = ""; // what the screen last showed
     this.told = ""; // the badge last published, so a steady list stays quiet
+    this.copied = ""; // the reference whose ✓ is on screen, "" when the mark has aged out
     cx.timer.every(TICK, (cx) => this.tick(cx));
     this.load(cx);
   }
@@ -474,6 +487,39 @@ export default class GitlabIssues extends View {
     });
   }
 
+  // The clipboard is the whole feature, so the ✓ is the whole receipt: nothing else on screen
+  // moves when a click lands, and a button that may or may not have worked is worse than no
+  // button. The mark is one copy's own — a second copy takes it over — and it is put away on a
+  // timer rather than left behind to claim a copy happened at some point.
+  copy(cx, text) {
+    if (!text || typeof cx?.write_to_clipboard !== "function") return;
+    cx.write_to_clipboard(text);
+    this.copied = text;
+    cx.notify();
+    cx.timer?.after(FLASH, (cx) => {
+      if (this.copied !== text) return;
+      this.copied = "";
+      cx.notify();
+    });
+  }
+
+  // The number is a button as well as a number: a click copies the reference the row is for to
+  // an agent (`acme/team/db#3`) and the rest of the row still opens the issue. The list is where
+  // an issue gets picked, so it is where its name is most worth having; the number is dim until
+  // the pointer comes to it, and its width is fixed so the titles stay in one column when the ✓
+  // replaces it — nothing jumps under the pointer that did the copying. The row's own handler is
+  // on the path of this click too, hence the stop.
+  num(t, m) {
+    const ref = refOf(m.path, m.iid);
+    const done = this.copied === ref;
+    return div().id(`i-copy-${m.n}`).flex_none().w(40).truncate().px(2).rounded(4).text_size(10.5)
+      .text_color(done ? t.done : t.dim)
+      .cursor_pointer().tooltip(done ? "copied" : `copy ${ref}`)
+      .hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.copy(cx, ref); })
+      .child(done ? "✓" : `#${m.iid}`);
+  }
+
   // The row is two lines of one wide column, with the iid on their left and the labels on the
   // first line's right. Everything on the right rides the same edge, so the labels and the
   // times line up down the list, and only the two titles give way when the panel is narrow —
@@ -482,10 +528,10 @@ export default class GitlabIssues extends View {
   item(t, m) {
     return h_flex().id(`i-${m.n}`).w_full().gap(7).items_start().px(7).py(5).rounded(6)
       .hover((s) => s.bg(t.hover))
-      .tooltip(`${m.path ? m.path + " " : ""}#${m.iid} · open the issue`)
+      .tooltip(`${m.path ? m.path + " " : ""}#${m.iid} · open the issue, or click the number to copy it`)
       .on_click(() => this.open(m))
       .children([
-        div().flex_none().text_size(10.5).text_color(t.dim).child(`#${m.iid}`),
+        this.num(t, m),
         v_flex().flex_1().min_w(0).min_h(0).gap(2).children([
           h_flex().w_full().min_w(0).gap(6).items_center().children([
             div().flex_1().min_w(0).truncate().child(m.title || "(no title)"),

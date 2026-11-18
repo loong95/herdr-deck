@@ -37,6 +37,9 @@ const VIEW = "issue-review.view";
 const DEFAULTS = { talk: true };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// How long the ✓ stays on the header's number after a copy: long enough to be seen, short
+// enough that the header goes back to being a header.
+const FLASH = 1200;
 
 // The list reads this: an issue closed here is off it before glab is asked again, because a row
 // that is already decided should not sit there for another poll.
@@ -60,6 +63,14 @@ export function markOpen(path, iid) {
   delete next[key];
   setShared(DONE, next);
   return next;
+}
+
+// The reference an agent can be handed, the way GitLab writes one across projects:
+// `acme/team/db#3`. A bare iid is not a reference — every project has its own #3 — and a URL is
+// not what an agent wants to parse out of a sentence.
+export function refOf(path, iid, mark = "#") {
+  const project = String(path ?? "");
+  return project ? `${project}${mark}${iid}` : `${mark}${iid}`;
 }
 
 // The project path as GitLab's API wants it in a URL: every slash of it escaped.
@@ -232,6 +243,7 @@ export default class IssueReview extends View {
     this.error = "";
     this.note = ""; // what the last close or reopen said
     this.noteBad = false;
+    this.copied = ""; // the reference whose ✓ is on screen, "" when the mark has aged out
     this.loading = false;
     this.busy = false;
     this.again = false; // a load that was asked for while one was already out
@@ -373,6 +385,38 @@ export default class IssueReview extends View {
     exec("glab", ["issue", "view", this.iid, "-R", this.path, "--web"], { on: this.on, timeout: TIMEOUT }).catch(() => {});
   }
 
+  // The clipboard is the whole feature, so the ✓ is the whole receipt: nothing else on screen
+  // moves when a click lands. It is put away on a timer rather than left behind to claim a copy
+  // happened at some point, and a later copy takes the mark over.
+  copy(cx, text) {
+    if (!text || typeof cx?.write_to_clipboard !== "function") return;
+    cx.write_to_clipboard(text);
+    this.copied = text;
+    cx.notify();
+    cx.timer?.after(FLASH, (cx) => {
+      if (this.copied !== text) return;
+      this.copied = "";
+      cx.notify();
+    });
+  }
+
+  // The number in the header is the thing an agent is handed — `acme/team/db#12` names the
+  // issue on its own, where a bare `#12` names one of every project's — so the number is the
+  // button that copies it. Fixed width, so the title beside it does not move when the ✓ lands.
+  num(t) {
+    const ref = refOf(this.path, this.iid);
+    const done = this.copied === ref;
+    return div().id("copy-ref").flex_none().w(40).h(20).text_center().rounded(5).bg(t.raised)
+      .text_size(11).text_color(done ? t.done : t.muted).truncate()
+      // Opened with no props — under `herdr-app check` — there is no issue to name, so the
+      // number is decoration and offers nothing it cannot do.
+      .when(Boolean(this.iid), (e) => e.cursor_pointer()
+        .tooltip(done ? "已复制，粘贴给 agent" : `复制 ${ref}`)
+        .hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.copy(cx, ref)))
+      .child(done ? "✓" : `#${this.iid}`);
+  }
+
   quiet(t, id, label, tip, press) {
     return div().id(id).h(28).px(9).flex().items_center().rounded(7).bg(t.raised).text_color(t.muted).text_size(12)
       .cursor_pointer().tooltip(tip).hover((s) => s.bg(t.hover)).on_click(press).child(label);
@@ -419,7 +463,7 @@ export default class IssueReview extends View {
     const overdue = due > 0 && due < Date.now() && this.verdict(m).state === "opened";
     return v_flex().flex_none().p(10).gap(7).children([
       h_flex().gap(8).items_center().children([
-        div().px(5).py(1).rounded(5).bg(t.raised).text_size(11).text_color(t.muted).child(`#${this.iid}`),
+        this.num(t),
         div().flex_1().min_w(0).truncate().font_semibold().child(String(m.title ?? (this.loading ? "加载中…" : "没有标题"))),
         div().text_size(11).text_color(t[tone] ?? t.dim).child(label),
         this.quiet(t, "refresh", this.loading ? "⋯" : "↻", "重新问一次 GitLab", (_e, cx) => this.load(cx)),

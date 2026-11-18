@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fake, log } from "./stub/herdr.mjs";
 import { byId, textOf } from "./stub/element.mjs";
-import GitlabIssues, { ago, pathOfRemote, projectOf, projectOfUrl, rowOf, say, short } from "../mods/gitlab-issues/main.js";
+import GitlabIssues, { ago, pathOfRemote, projectOf, projectOfUrl, refOf, rowOf, say, short } from "../mods/gitlab-issues/main.js";
 import Rail from "../mods/rail/main.js";
 
 const REPO = "/home/dev/projects/acme/api";
@@ -99,7 +99,12 @@ const cxFor = () => {
     notify() { cx.notified++; },
     focus_handle: () => ({}),
     spawn: (fn) => fn(cx),
-    timer: { every: () => 0, after: (ms, fn) => { setTimeout(() => fn(cx), ms); return 0; } },
+    // The row's own click and the number's are both on the path of a press on the number:
+    // the inner one stops it there.
+    stop_propagation: () => { cx.stopped = (cx.stopped ?? 0) + 1; },
+    // App::write_to_clipboard, as a click handler is handed it.
+    write_to_clipboard: (text) => { cx.clipboard = text; },
+    timer: { every: () => 0, after: (ms, fn) => { setTimeout(() => fn(cx), ms).unref?.(); return 0; } },
   };
   return cx;
 };
@@ -239,6 +244,31 @@ test("a click opens a tab of its own, with that machine's glab", async () => {
   }]]);
   // A click is not a request: the tab does its own asking, on the machine it was handed.
   assert.equal(calls.filter((c) => c.cmd === "glab").length, 0);
+});
+
+test("a row's number copies the issue's reference, and the row still opens it", async () => {
+  const { p, cx } = await open();
+  const row = p.rows.find((m) => m.path === "acme/team/db");
+  // The project's path is half of the reference: a `#7` is one of every project's.
+  assert.equal(refOf(row.path, row.iid), `acme/team/db#${row.iid}`);
+  assert.equal(refOf("", row.iid), `#${row.iid}`, "no project, half a reference — still the number");
+
+  const chip = () => byId(p.render(), `i-copy-${row.n}`);
+  assert.equal(textOf(chip()), `#${row.iid}`);
+
+  calls.length = 0;
+  runs.length = 0;
+  cx.clipboard = "";
+  chip()._h.on_click(null, cx);
+  assert.equal(cx.clipboard, `acme/team/db#${row.iid}`);
+  // The press stopped at the number: the row's own handler would have opened a tab.
+  assert.equal(cx.stopped, 1);
+  assert.deepEqual(runs, []);
+  // Nothing on screen moves when a copy lands, so the ✓ is the receipt…
+  assert.equal(textOf(chip()), "✓");
+  // …and the receipt is put away: a ✓ that stayed would claim a copy nobody just made.
+  await settle(1300);
+  assert.equal(textOf(chip()), `#${row.iid}`);
 });
 
 test("clicking the same issue again shows the tab it already has", async () => {

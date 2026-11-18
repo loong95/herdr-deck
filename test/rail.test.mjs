@@ -5,7 +5,8 @@
 // The modules the mods import come from test/stub/ (see stub/register.mjs): the real source
 // is imported as it is, nothing is copied, stripped or re-evaluated.
 import { fake, log } from "./stub/herdr.mjs";
-import GitlabMr, { pathOfRemote, projectOf, say, ago, short } from "../mods/gitlab-mr/main.js";
+import { byId, textOf } from "./stub/element.mjs";
+import GitlabMr, { pathOfRemote, projectOf, refOf, say, ago, short } from "../mods/gitlab-mr/main.js";
 import Rail from "../mods/rail/main.js";
 
 // --- the fake host ---
@@ -77,13 +78,20 @@ const eq = (label, got, want) => {
 };
 const settle = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 let notifies = 0;
+let stopped = 0;
+let clipboard = "";
 const cx = {
   notify: () => { notifies++; },
   focus_handle: () => ({}),
   spawn: (fn) => fn(cx),
+  // The row's own click and the number's are both on the path of a press on the number: the
+  // inner one stops it there.
+  stop_propagation: () => { stopped++; },
+  // App::write_to_clipboard, as a click handler is handed it.
+  write_to_clipboard: (text) => { clipboard = text; },
   // `after` waits like the real one: a request that lands before SLOW never gets to
   // raise a spinner, which is the whole point of the delay.
-  timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms); return {}; } },
+  timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms).unref?.(); return {}; } },
 };
 
 // --- the pure helpers, against what this machine really says ---
@@ -432,6 +440,26 @@ log.run.length = 0;
 o.open({ iid: 5, path: "acme/platform/db", title: "长".repeat(90) });
 eq("长标题截断，项目还在",
   [runs[0][1].name.endsWith(" · acme/platform/db"), runs[0][1].name.includes("…")], [true, true]);
+
+// --- 数字就是复制按钮：点它把 agent 能用的引用放进剪贴板，点行本身还是开 tab ---
+eq("引用是项目和编号，缺一不可", refOf("acme/team/trunk/db", 3), "acme/team/trunk/db!3");
+eq("没有项目就只剩编号", refOf("", 3), "!3");
+
+const chipOf = (m) => byId(o.render(), `m-copy-${m.n}`);
+const someMr = o.shown()[0];
+const ref = `${someMr.path}!${someMr.iid}`;
+eq("行里摆的是编号", textOf(chipOf(someMr)), `!${someMr.iid}`);
+stopped = 0;
+log.run.length = 0;
+clipboard = "";
+chipOf(someMr)._h.on_click({}, cx);
+eq("点数字：剪贴板拿到整条引用", [clipboard, refOf(someMr.path, someMr.iid)], [ref, ref]);
+eq("点数字：事件停在这一层，那一行不会跟着开 tab", [stopped, runs], [1, []]);
+eq("点数字：屏幕上没有别的东西动，✓ 就是回执", textOf(chipOf(someMr)), "✓");
+
+// 回执是回执，不是状态：过一会儿编号要回来
+await settle(1300);
+eq("回执自己走开", textOf(chipOf(someMr)), `!${someMr.iid}`);
 
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

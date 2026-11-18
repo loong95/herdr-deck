@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { fake, log } from "./stub/herdr.mjs";
 import { byId, textOf } from "./stub/element.mjs";
 import IssueReview, {
-  cellsOf, enc, labelsOf, markDone, markOpen, mdInline, mdLines, noteRows, say,
+  cellsOf, enc, labelsOf, markDone, markOpen, mdInline, mdLines, noteRows, refOf, say,
 } from "../mods/issue-review/main.js";
 
 // The app hands a command to every copy of a mod, whichever one it would really have picked, so
@@ -94,7 +94,10 @@ const cx = {
   notify: () => {},
   focus_handle: () => ({}),
   spawn: (fn) => fn(cx),
-  timer: { every: () => ({}), after: () => ({}) },
+  stop_propagation: () => { cx.stopped = (cx.stopped ?? 0) + 1; },
+  // App::write_to_clipboard, as a click handler is handed it.
+  write_to_clipboard: (text) => { globalThis.__clipboard = text; },
+  timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms).unref?.(); return {}; } },
 };
 
 // One panel, on a fresh world, with the earlier panels' commands dropped.
@@ -295,6 +298,26 @@ test("the browser is a button: glab issue view --web, on the tab's machine", asy
   await settle();
   assert.deepEqual(calls.map((c) => [c.args, c.opts]),
     [[["issue", "view", "12", "-R", PROJECT, "--web"], { on: "wsl", timeout: 45000 }]]);
+});
+
+// --- the number in the header is the reference an agent is handed ---
+test("the header's number copies group/project#iid, and says so", async () => {
+  const p = await make();
+  assert.equal(refOf(PROJECT, 12), "acme/platform/api#12");
+  assert.equal(refOf("", 12), "#12", "no project, half a reference — still the number");
+
+  const chip = () => byId(p.render(), "copy-ref");
+  assert.equal(textOf(chip()), "#12", "the number is what the header shows");
+
+  globalThis.__clipboard = "";
+  chip()._h.on_click({}, cx);
+  assert.equal(globalThis.__clipboard, "acme/platform/api#12");
+  // Nothing on screen moves when a copy lands, so the ✓ is the receipt.
+  assert.equal(textOf(chip()), "✓");
+
+  // …and it is a receipt, not a state: the number comes back.
+  await settle(1300);
+  assert.equal(textOf(chip()), "#12");
 });
 
 test("the discussion folds away, and stays folded for the next tab", async () => {

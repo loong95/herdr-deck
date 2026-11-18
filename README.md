@@ -288,13 +288,16 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
   clicking the same row again shows that tab rather than opening a second copy of it.
   The tab is named `!iid title · project`, and that name is the whole of the match: an
   iid is not an identity — every project has a `!4` — and a tab carries a name and
-  nothing else a mod can read.
+  nothing else a mod can read. A row's number is a button of its own: it copies
+  `group/project!iid` — the reference an agent is handed, project and all — and flashes
+  a ✓, while the rest of the row still opens the review.
   CI status is not shown: this GitLab leaves `pipeline` out of both list endpoints,
   so the verdict is `detailed_merge_status`.
 - **gitlab-issues** — the same two scopes for open issues: the space's project, or
   every project the token can see, grouped with the space's own one first. A row
   shows the issue's labels and who it is assigned to, and opens it in an issue-review
-  tab (the same click-twice rule as the MR list, keyed the same way: `#iid title · project`). The project comes from the folder's
+  tab (the same click-twice rule as the MR list, keyed the same way: `#iid title · project`).
+  Its number copies `group/project#iid` the same way the MR list's does. The project comes from the folder's
   `origin` remote — the branch's upstream remote when there is no origin — because an
   issue belongs to the project and not to the branch, which is why this panel and
   gitlab-mr read the repo differently.
@@ -303,10 +306,12 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
   discussion on the right, with labels in GitLab's own colours, milestone and due date
   in the header, and close / reopen behind a confirmation dialog. A closed issue leaves
   the list at once (shared state again) instead of waiting out the poll; a reopened one
-  comes back the same way. The browser is a button, not the click.
+  comes back the same way. The browser is a button, not the click, and the number in the
+  header is the button that copies `group/project#iid`.
 - **mr-review** — changed files on the left, their diff on the right, merge and close
   along the top. GitLab's verdict is spelled out (`需先 rebase`, `有冲突`, `待批准`…) and a
-  merge it refuses is a button that will not press, with the reason on its tooltip. Beside
+  merge it refuses is a button that will not press, with the reason on its tooltip — and the
+  number in the header copies `group/project!iid`, as in every other GitLab panel. Beside
   it sits the newest pipeline (`流水线通过` / `流水线失败`, a click away from its jobs), and
   a `讨论` button opens the MR's comments
   as a third column, so a note about a file is read with that file on screen. Everything

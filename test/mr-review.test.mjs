@@ -7,7 +7,7 @@
 import { fake, log } from "./stub/herdr.mjs";
 import { byId, textOf } from "./stub/element.mjs";
 import MrReview, {
-  enc, unquote, chunks, fileOf, say, tint, splitRows, treeRows, mdLines, mdInline, markDone,
+  enc, unquote, chunks, fileOf, refOf, say, tint, splitRows, treeRows, mdLines, mdInline, markDone,
   pipelineOf, talkRows,
 } from "../mods/mr-review/main.js";
 
@@ -91,9 +91,12 @@ const cx = {
   notify: () => {},
   focus_handle: () => ({}),
   spawn: (fn) => fn(cx),
-  timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms); return {}; } },
+  timer: { every: () => ({}), after: (ms, fn) => { setTimeout(() => fn(cx), ms).unref?.(); return {}; } },
+  stop_propagation: () => { cx.stopped = (cx.stopped ?? 0) + 1; },
   // App::open_url, as a click handler is handed it: the pipeline chip's way into GitLab.
   open_url: (url) => globalThis.__opened.push(url),
+  // App::write_to_clipboard: the same click handler's way into an agent's prompt.
+  write_to_clipboard: (text) => { globalThis.__clipboard = text; },
 };
 
 const fails = [];
@@ -321,6 +324,18 @@ eq("评论的正文画出来了", textOf(byId(pane, "talk-n1")).includes("第一
 eq("列头说的是人说的那几条", textOf(byId(pane, "mr-talk-3")).includes("讨论 3 条"), true);
 byId(pane, "talk-close")._h.on_click({}, cx);
 eq("收起来就只剩文件和差异", byId(ci.render(), "mr-talk-3"), null);
+
+// --- 头上那个编号是复制按钮：交给 agent 的是 group/project!iid，不是一个孤零零的 !3 ---
+eq("引用是项目和编号，缺一不可", refOf(PROJECT, "3"), "acme/team/trunk/db!3");
+eq("没有项目就只剩编号", refOf("", "3"), "!3");
+const numChip = () => byId(ci.render(), "copy-ref");
+eq("头上摆的是编号", textOf(numChip()), "!3");
+globalThis.__clipboard = "";
+numChip()._h.on_click({}, cx);
+eq("点一下就进剪贴板", globalThis.__clipboard, "acme/team/trunk/db!3");
+eq("屏幕上没有别的东西动，✓ 就是回执", textOf(numChip()), "✓");
+await settle(1300);
+eq("回执自己走开，编号回来", textOf(numChip()), "!3");
 diffState.pipes = [];
 diffState.talk = [];
 

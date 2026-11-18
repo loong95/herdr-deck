@@ -3,7 +3,7 @@
 // its own, so the diff gets the full width of the window. Everything comes from the API:
 // the repo does not have to be on this machine, and nothing is written into a local .git.
 
-import { View, div } from "gpui-kit";
+import { View, div, list } from "gpui-kit";
 import { h_flex, v_flex, Scrollbar, v_virtual_list } from "gpui-base";
 import { exec, nextCommand, openOverlay, props, setShared, shared, settings, theme } from "herdr";
 
@@ -29,7 +29,7 @@ const PENDING = "mr-review.pending";
 const DONE = "mr-review.done";
 const DONE_KEEP = 15 * 60e3;
 const VIEW = "mr-review.view";
-const DEFAULTS = { files: "flat", diff: "unified", desc: false };
+const DEFAULTS = { files: "flat", diff: "unified", desc: false, wrap: "wrap" };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // How long the ✓ stays on the header's number after a copy: long enough to be seen, short
@@ -104,8 +104,8 @@ const CI = {
 
 // The MR's pipelines, newest first as GitLab lists them: the first one is the run the
 // verdict is about, and a review does not have room for the history of it.
-export function pipelineOf(list) {
-  const p = (Array.isArray(list) ? list : []).find(Boolean);
+export function pipelineOf(pipes) {
+  const p = (Array.isArray(pipes) ? pipes : []).find(Boolean);
   if (!p) return null;
   const [label, tone] = CI[p.status] ?? ["流水线 " + String(p.status ?? ""), "dim"];
   return {
@@ -492,7 +492,7 @@ export default class MrReview extends View {
   }
 
   setView(key, value) {
-    const next = { files: this.view("files"), diff: this.view("diff"), desc: Boolean(this.view("desc")), [key]: value };
+    const next = { files: this.view("files"), diff: this.view("diff"), desc: Boolean(this.view("desc")), wrap: this.view("wrap"), [key]: value };
     setShared(VIEW, next);
   }
 
@@ -943,36 +943,47 @@ export default class MrReview extends View {
     return div().id(`${pre}-${i}`).w_full().flex_none().ml(pad).child(l.text);
   }
 
-  diffRow({ kind, number, text }, t) {
+  // One row of the 单栏 view. Cut, it is a single 20px line that ends in an ellipsis at the
+  // window's edge; wrapped, it is as tall as its text needs and nothing is out of reach —
+  // which is the only way to read a long Chinese sentence or a long URL in a diff.
+  diffRow({ kind, number, text }, t, wrap = false) {
     const a = tint(t);
-    if (kind === "@") return div().w_full().px(12).h(20).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
-    return h_flex().w_full().h(20).flex_none().gap(10).when(kind === "+", (e) => e.bg(t.ansi2 + a)).when(kind === "-", (e) => e.bg(t.ansi1 + a))
-      .child(div().w(30).flex_none().text_right().text_color(kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.dim).child(number === undefined ? "" : String(number)))
-      .child(div().flex_1().min_w(0).truncate().child(text));
+    if (kind === "@") return div().w_full().px(12).flex_none().bg(t.raised).text_color(t.dim)
+      .when(wrap, (e) => e.py(2)).when(!wrap, (e) => e.h(20).truncate()).child(text);
+    return h_flex().w_full().flex_none().gap(10)
+      .when(wrap, (e) => e.min_h(20).py(1).items_start()).when(!wrap, (e) => e.h(20))
+      .when(kind === "+", (e) => e.bg(t.ansi2 + a)).when(kind === "-", (e) => e.bg(t.ansi1 + a))
+      .child(div().w(34).flex_none().whitespace_nowrap().text_right().text_color(kind === "+" ? t.ansi2 : kind === "-" ? t.ansi1 : t.dim).child(number === undefined ? "" : String(number)))
+      .child(div().flex_1().min_w(0).when(!wrap, (e) => e.truncate()).child(text));
   }
 
   // One row of the side-by-side view: whatever is on each side, and a marked-out hole
   // where a side ran out of lines. Both sides are flex_1 with no flex_none on top: the
   // second one wins and the wide side then squeezes the other out of the window.
-  splitSide(t, cell, tone, edge) {
+  splitSide(t, cell, tone, edge, wrap) {
     const body = cell
-      ? h_flex().flex_1().min_w(0).h(20).gap(10).when(tone, (e) => e.bg(tone)).children([
-        div().w(30).flex_none().text_right().text_color(cell.kind === "-" ? t.ansi1 : cell.kind === "+" ? t.ansi2 : t.dim).child(String(cell.number)),
-        div().flex_1().min_w(0).truncate().child(cell.text),
+      ? h_flex().flex_1().min_w(0).gap(10).when(tone, (e) => e.bg(tone))
+        .when(wrap, (e) => e.min_h(20).py(1).items_start()).when(!wrap, (e) => e.h(20)).children([
+        div().w(34).flex_none().whitespace_nowrap().text_right().text_color(cell.kind === "-" ? t.ansi1 : cell.kind === "+" ? t.ansi2 : t.dim).child(String(cell.number)),
+        div().flex_1().min_w(0).when(!wrap, (e) => e.truncate()).child(cell.text),
       ])
-      : div().flex_1().min_w(0).h(20).bg(t.raised + "10");
+      : div().flex_1().min_w(0).bg(t.raised + "10").when(wrap, (e) => e.min_h(20)).when(!wrap, (e) => e.h(20));
     return edge
       ? h_flex().flex_1().min_w(0).border_r(1).border_color(t.border).child(body)
       : h_flex().flex_1().min_w(0).child(body);
   }
 
-  splitRow(row, t) {
-    if (row.kind === "@") return div().w_full().h(20).flex_none().px(12).truncate().bg(t.raised).text_color(t.dim).child(row.text);
-    if (row.kind !== "x" && row.kind !== "=") return div().w_full().h(20).flex_none().px(12).truncate().text_color(t.dim).child(row.text);
+  splitRow(row, t, wrap = false) {
+    if (row.kind === "@") return div().w_full().flex_none().px(12).bg(t.raised).text_color(t.dim)
+      .when(wrap, (e) => e.py(2)).when(!wrap, (e) => e.h(20).truncate()).child(row.text);
+    if (row.kind !== "x" && row.kind !== "=") return div().w_full().flex_none().px(12).text_color(t.dim)
+      .when(wrap, (e) => e.py(2)).when(!wrap, (e) => e.h(20).truncate()).child(row.text);
     const a = tint(t);
-    return h_flex().w_full().h(20).flex_none()
-      .child(this.splitSide(t, row.left, row.left?.kind === "-" ? t.ansi1 + a : null, true))
-      .child(this.splitSide(t, row.right, row.right?.kind === "+" ? t.ansi2 + a : null, false));
+    // Wrapped, one side is often taller than the other; stretching both to the row's height
+    // keeps the removed and added runs level, and fills a hole's band all the way down.
+    return h_flex().w_full().flex_none().when(wrap, (e) => e.items_stretch())
+      .child(this.splitSide(t, row.left, row.left?.kind === "-" ? t.ansi1 + a : null, true, wrap))
+      .child(this.splitSide(t, row.right, row.right?.kind === "+" ? t.ansi2 + a : null, false, wrap));
   }
 
   fileRow(t, id, f, depth, name) {
@@ -1015,21 +1026,30 @@ export default class MrReview extends View {
     const id = `mr-diff-${this.iid}`;
     const f = this.files.find((x) => x.path === this.open);
     const split = this.view("diff") === "split";
+    const wrap = this.view("wrap") !== "cut";
     const rows = split ? this.split : this.rows;
-    // Sharing the window between the two sides is the point of the split view, so it
-    // takes no more width than there is: long lines are cut, and 单栏 is the view that
-    // scrolls sideways to show a whole one.
-    const width = split ? 0 : this.widths.one;
+    // A long line has three fates, and the reader picks: wrapped over as many rows as it
+    // needs — the default, because a line cut at the window's edge stays unread — scrolled
+    // sideways in 单栏, or out of reach in 并排, where sharing the window between the two
+    // sides is the point. Only the sideways view has to guess how wide its content is, so
+    // an estimate is never what a reader is stuck with.
+    const width = split || wrap ? 0 : this.widths.one;
+    const row = (r) => (split ? this.splitRow(r, t, wrap) : this.diffRow(r, t, wrap));
     return v_flex().id(id).flex_1().h_full().min_w(0).min_h(0)
       .child(h_flex().h(28).flex_none().px(10).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.muted).child(f ? f.path : "选一个文件看它的差异"))
         .when(Boolean(f?.folded), (e) => e.child(div().text_size(11).text_color(t.dim).child("GitLab 折起了这段，已按整份补丁取回")))
-        .when(split && this.widths.half * 2 > 960, (e) => e.child(div().text_size(11).text_color(t.dim).child("长行截断，切回单栏可横向滚")))
+        .when(!wrap && split && this.widths.half * 2 > 960, (e) => e.child(div().text_size(11).text_color(t.dim).child("长行截断，切回单栏可横向滚")))
+        .child(this.seg(t, "wrap", [["wrap", "换行"], ["cut", "截断"]], wrap ? "wrap" : "cut", (v) => this.setView("wrap", v)))
         .child(this.seg(t, "diff", [["unified", "单栏"], ["split", "并排"]], this.view("diff"), (v) => this.setView("diff", v))))
       .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
-        .child(div().id(`${id}-x`).size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(width).h_full().child(v_virtual_list(id, rows.length, 20, (i) => String(i),
-            (range) => rows.slice(range.start, range.end).map((row) => (split ? this.splitRow(row, t) : this.diffRow(row, t)))).size_full())))
+        // Wrapped rows are measured as they are drawn — list() asks nothing about their
+        // height — where the cut ones are all 20px and v_virtual_list places them by that.
+        .child(wrap
+          ? list(id, rows.length, (i) => String(i), (i) => row(rows[i])).absolute().inset_0()
+          : div().id(`${id}-x`).size_full().overflow_x_scrollbar()
+            .child(div().w_full().min_w(width).h_full().child(v_virtual_list(id, rows.length, 20, (i) => String(i),
+              (range) => rows.slice(range.start, range.end).map(row)).size_full())))
         .child(Scrollbar.vertical(id).viewport_from_layout().absolute().inset_0()))
       .when(Boolean(this.hint), (e) => e.child(div().px(10).py(4).text_size(11).text_color(t.blocked).child(this.hint)));
   }

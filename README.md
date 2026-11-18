@@ -314,7 +314,10 @@ read-only fallback works remotely too, re-reading the session folder every 3 s
   number in the header copies `group/project!iid`, as in every other GitLab panel. Beside
   it sits the newest pipeline (`流水线通过` / `流水线失败`, a click away from its jobs), and
   a `讨论` button opens the MR's comments
-  as a third column, so a note about a file is read with that file on screen. Everything
+  as a third column, so a note about a file is read with that file on screen. Long lines
+  wrap instead of stopping at the window's edge — a sentence cut there is a sentence not
+  read — and `截断` puts back the one-line rows, with the sideways scroll, for code that
+  reads better unbroken. Everything
   comes from the API: the repo does not have to be on this machine, and nothing is
   written into a local `.git`.
 - **board** — two views of what the whole window is doing, from Herdr's own `agents()` and

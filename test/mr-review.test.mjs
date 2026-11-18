@@ -463,14 +463,36 @@ globalThis.__props = { iid: "3", path: PROJECT, on: "wsl" };
 const v1 = new MrReview();
 v1.init({}, cx);
 await settle();
-eq("默认是平铺列表 + 单栏差异 + 说明收起", [v1.view("files"), v1.view("diff"), v1.view("desc")], ["flat", "unified", false]);
+eq("默认是平铺列表 + 单栏差异 + 说明收起 + 长行换行", [v1.view("files"), v1.view("diff"), v1.view("desc"), v1.view("wrap")], ["flat", "unified", false, "wrap"]);
 v1.setView("files", "tree");
 v1.setView("desc", true);
 const v2 = new MrReview();
 v2.init({}, cx);
 await settle();
 eq("新 tab 沿用同一套选择", [v2.view("files"), v2.view("diff"), v2.view("desc")], ["tree", "unified", true]);
-eq("写出去的是完整一份", globalThis.__shared["mr-review.view"], { files: "tree", diff: "unified", desc: true });
+eq("写出去的是完整一份", globalThis.__shared["mr-review.view"], { files: "tree", diff: "unified", desc: true, wrap: "wrap" });
+
+// --- 长行：换行占几行就画几行，window 边上的截断不该是唯一的读法 ---
+// The app cannot be measured from here, so what is checked is the shape handed to it: a
+// wrapped row states a minimum height and no ellipsis, a cut one states 20px and truncates,
+// and the pane picks the list that measures rows rather than the one that places 20px rows.
+const tst = { background: "#0d1117", foreground: "#e6edf3" };
+const LONG = { kind: "+", number: 4377, text: "- 禁止改: `deploy/nginx.conf`、`src/**`、`package.json` / `pnpm-lock.yaml`、其它仓" };
+const wrapped = v1.diffRow(LONG, tst, true);
+const cut = v1.diffRow(LONG, tst, false);
+eq("换行时行高跟着文字走，号数留在第一行", [wrapped._a.h, wrapped._a.min_h, "items_start" in wrapped._a], [undefined, 20, true]);
+eq("换行时不截断，文字自己折行", "truncate" in wrapped.kids[1]._a, false);
+eq("截断时还是一行 20px，末尾有省略号", [cut._a.h, "truncate" in cut.kids[1]._a], [20, true]);
+const find = (el, tag) => (el == null || typeof el !== "object" ? null
+  : el.tag === tag ? el : (el.kids ?? []).map((k) => find(k, tag)).find(Boolean) ?? null);
+const wrapPane = v1.render();
+eq("换行时差异交给能自己量行的列表", [Boolean(find(wrapPane, "list")), find(wrapPane, "vlist")], [true, null]);
+eq("换行了就不必再横向滚", byId(wrapPane, "mr-diff-3-x"), null);
+v1.setView("wrap", "cut");
+const cutPane = v1.render();
+eq("截断时才回到每行 20px 的列表，外加一个横向滚的框",
+  [Boolean(find(cutPane, "vlist")), find(cutPane, "list"), "overflow_x_scrollbar" in byId(cutPane, "mr-diff-3-x")._a], [true, null, true]);
+v1.setView("wrap", "wrap");
 
 // --- 没有 props 时（herdr-app check 就是这么跑的）不去敲 glab ---
 reset();
